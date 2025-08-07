@@ -1,0 +1,16 @@
+# Ignore the actual docker-compose file with real credentials
+docker-compose.yaml
+
+# Ignore the scores database
+scores.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+.env
+
+# Logs
+*.log

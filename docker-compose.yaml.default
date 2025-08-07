@@ -1,0 +1,14 @@
+services:
+  leetbot:
+    build: ./
+    container_name: leetbot
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Stockholm
+      - IRC_SERVER=irc.server.address
+      - IRC_PORT=6667
+      - IRC_CHANNEL=#yourchannel
+      - IRC_NICKNAME=YourBotName
+    volumes:
+      - "/etc/localtime:/etc/localtime:ro"
+      - "./scores.json:/scores.json"  # Using relative path for better portability
