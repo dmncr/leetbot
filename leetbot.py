@@ -7,6 +7,7 @@ import threading
 import json
 import os
 import re
+import logging
 
 # Get configuration from environment variables with defaults
 IRC_SERVER = os.getenv('IRC_SERVER', 'portlane.se.quakenet.org')
@@ -21,8 +22,39 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         self.channel = channel
         self.scores = {}
         self.lock = threading.Lock()
+        
+        # Configure encoding error handling for better resilience
+        # Set up logging for encoding issues
+        logging.basicConfig(level=logging.INFO)
+        self.logger = logging.getLogger(__name__)
+        
         self.load_scores()
         threading.Thread(target=self.schedule_announcements, daemon=True).start()
+
+    def on_connect(self, connection, event):
+        """Override to set encoding error handling after connection is established"""
+        try:
+            # Set encoding to handle errors gracefully
+            connection.buffer.encoding = 'utf-8'
+            connection.buffer.errors = 'replace'  # Replace invalid bytes with '?'
+            self.logger.info("Connection encoding set to utf-8 with 'replace' error handling")
+        except Exception as e:
+            self.logger.warning(f"Could not set encoding error handling: {e}")
+        super().on_connect(connection, event)
+
+    def _get_safe_string(self, input_str, context=""):
+        """Safely convert any input to a clean UTF-8 string"""
+        try:
+            if isinstance(input_str, str):
+                # Try to encode and decode to clean up any problematic characters
+                return input_str.encode('utf-8', 'ignore').decode('utf-8', 'replace')
+            elif isinstance(input_str, bytes):
+                return input_str.decode('utf-8', 'replace')
+            else:
+                return str(input_str).encode('utf-8', 'ignore').decode('utf-8', 'replace')
+        except Exception as e:
+            self.logger.warning(f"Error cleaning string in {context}: {e}")
+            return "<?>"  # Return a safe placeholder
 
     def on_nicknameinuse(self, c, e):
         c.nick(c.get_nickname() + "_")
@@ -32,28 +64,35 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         c.privmsg(self.channel, "LeetBot is now online! Type '!help' for commands.")
 
     def on_pubmsg(self, c, e):
-        now = datetime.datetime.now()
-        start_time = now.replace(hour=13, minute=37, second=0, microsecond=0)
-        end_time = now.replace(hour=13, minute=38, second=0, microsecond=0)
-        message = e.arguments[0].strip()
-        nick = e.source.nick
+        try:
+            now = datetime.datetime.now()
+            start_time = now.replace(hour=13, minute=37, second=0, microsecond=0)
+            end_time = now.replace(hour=13, minute=38, second=0, microsecond=0)
+            
+            # Safely extract message and nickname with encoding error handling
+            message = self._get_safe_string(e.arguments[0] if e.arguments else "", "message").strip()
+            nick = self._get_safe_string(e.source.nick if hasattr(e.source, 'nick') else "unknown", "nickname")
 
-        if nick != self.connection.get_nickname() and '!timetest' in message.lower():
-            self.send_time(e, now)
-        elif start_time <= now <= end_time and self.is_leet_message(message):
-            score = self.calculate_score(now)
-            with self.lock:
-                self.update_scores(nick, score, now)
-        elif message.lower() == '!help':
-            self.send_help(e)
-        elif message.lower() == '!time':
-            self.send_time(e, now)
-        elif message.lower() == '!highscores':
-            self.send_highscores(e)
-        elif message.lower() in ['!toptoday', '!topweek', '!topmonth', '!topyear']:
-            self.send_top_scores(e, message.lower()[4:])  # Remove '!top' prefix
-        elif message.lower() == '!statistics':
-            self.send_statistics(e)
+            if nick != self.connection.get_nickname() and '!timetest' in message.lower():
+                self.send_time(e, now)
+            elif start_time <= now <= end_time and self.is_leet_message(message):
+                score = self.calculate_score(now)
+                with self.lock:
+                    self.update_scores(nick, score, now)
+            elif message.lower() == '!help':
+                self.send_help(e)
+            elif message.lower() == '!time':
+                self.send_time(e, now)
+            elif message.lower() == '!highscores':
+                self.send_highscores(e)
+            elif message.lower() in ['!toptoday', '!topweek', '!topmonth', '!topyear']:
+                self.send_top_scores(e, message.lower()[4:])  # Remove '!top' prefix
+            elif message.lower() == '!statistics':
+                self.send_statistics(e)
+                
+        except Exception as exc:
+            self.logger.error(f"Unexpected error in on_pubmsg: {exc}")
+            # Continue running despite errors
 
     def is_leet_message(self, message):
         pattern = re.compile(r'\b(1|i|l)(3|e){2}(7|t)\b', re.IGNORECASE)
@@ -163,12 +202,21 @@ class LeetBot(irc.bot.SingleServerIRCBot):
             "Type '1337' or similar between 13:37:00 and 13:38:00 to participate."
         ]
         for line in help_messages:
-            c.privmsg(e.target, line)
+            try:
+                safe_line = self._get_safe_string(line, "help message")
+                c.privmsg(e.target, safe_line)
+            except Exception as exc:
+                self.logger.error(f"Error sending help message: {exc}")
 
     def send_time(self, e, timestamp):
-        c = self.connection
-        time_str = timestamp.strftime('%H:%M:%S.%f')[:-3]  # Format with milliseconds
-        c.privmsg(e.target, f"Current server time: {time_str}")
+        try:
+            c = self.connection
+            time_str = timestamp.strftime('%H:%M:%S.%f')[:-3]  # Format with milliseconds
+            message = f"Current server time: {time_str}"
+            safe_message = self._get_safe_string(message, "time message")
+            c.privmsg(e.target, safe_message)
+        except Exception as exc:
+            self.logger.error(f"Error sending time message: {exc}")
 
     def send_highscores(self, e):
         c = self.connection
@@ -260,83 +308,119 @@ class LeetBot(irc.bot.SingleServerIRCBot):
                 self.make_announcements()
 
     def make_announcements(self):
-        c = self.connection
-        now = datetime.datetime.now()
-        scores = self.get_current_scores(now)
+        try:
+            c = self.connection
+            now = datetime.datetime.now()
+            scores = self.get_current_scores(now)
 
-        def format_period_stats(scores_dict, period):
-            if scores_dict:
-                def get_score(item):
-                    nick, score_data = item
-                    return score_data['score'] if isinstance(score_data, dict) else score_data
-                
-                total_score = sum(get_score(item) for item in scores_dict.items())
-                avg_score = total_score / len(scores_dict)
-                sorted_scores = sorted(scores_dict.items(), key=lambda x: get_score(x), reverse=True)
-                high_scorer = sorted_scores[0]
-                
-                winner_score = get_score(('', high_scorer[1]))
-                winner_time = high_scorer[1].get('timestamp', '') if isinstance(high_scorer[1], dict) else ''
-                winner_time_str = f" at {winner_time}" if winner_time else ""
-                
-                summary = (f"{period}'s winner is {high_scorer[0]} with a score of {winner_score:.2f}{winner_time_str}! " 
-                         f"Total score: {total_score:.2f}, Average: {avg_score:.2f}, "
-                         f"Participants: {len(scores_dict)}")
-                
-                # Format all player scores with timestamps
-                scores_list = []
-                for nick, score_data in sorted_scores:
-                    score = get_score(('', score_data))
-                    timestamp = score_data.get('timestamp', '') if isinstance(score_data, dict) else ''
-                    time_str = f" at {timestamp}" if timestamp else ""
-                    scores_list.append(f"{nick}: {score:.2f}{time_str}")
-                
-                return [summary, f"All scores: {', '.join(scores_list)}"]
-            return [f"No participants {period.lower()}."]
+            def format_period_stats(scores_dict, period):
+                if scores_dict:
+                    def get_score(item):
+                        nick, score_data = item
+                        return score_data['score'] if isinstance(score_data, dict) else score_data
+                    
+                    total_score = sum(get_score(item) for item in scores_dict.items())
+                    avg_score = total_score / len(scores_dict)
+                    sorted_scores = sorted(scores_dict.items(), key=lambda x: get_score(x), reverse=True)
+                    high_scorer = sorted_scores[0]
+                    
+                    winner_score = get_score(('', high_scorer[1]))
+                    winner_time = high_scorer[1].get('timestamp', '') if isinstance(high_scorer[1], dict) else ''
+                    winner_time_str = f" at {winner_time}" if winner_time else ""
+                    
+                    summary = (f"{period}'s winner is {high_scorer[0]} with a score of {winner_score:.2f}{winner_time_str}! " 
+                             f"Total score: {total_score:.2f}, Average: {avg_score:.2f}, "
+                             f"Participants: {len(scores_dict)}")
+                    
+                    # Format all player scores with timestamps
+                    scores_list = []
+                    for nick, score_data in sorted_scores:
+                        score = get_score(('', score_data))
+                        timestamp = score_data.get('timestamp', '') if isinstance(score_data, dict) else ''
+                        time_str = f" at {timestamp}" if timestamp else ""
+                        scores_list.append(f"{nick}: {score:.2f}{time_str}")
+                    
+                    return [summary, f"All scores: {', '.join(scores_list)}"]
+                return [f"No participants {period.lower()}."]
 
-        # Daily announcements
-        if scores['daily']:
-            messages = format_period_stats(scores['daily'], "Today")
-            for message in messages:
-                c.privmsg(self.channel, message)
+            # Daily announcements
+            if scores['daily']:
+                messages = format_period_stats(scores['daily'], "Today")
+                for message in messages:
+                    try:
+                        safe_message = self._get_safe_string(message, "daily announcement")
+                        c.privmsg(self.channel, safe_message)
+                    except Exception as exc:
+                        self.logger.error(f"Error sending daily announcement: {exc}")
 
-            # Get today's contestants list with attempt details
-            date = now.date()
-            daily_key = f'{date.year}-{date.month}-{date.day}'
-            contestants = self.scores['daily'].get(daily_key + '_contestants', [])
-            if contestants:
-                c.privmsg(self.channel, "Today's attempts in chronological order:")
-                for contestant in sorted(contestants, key=lambda x: x['timestamp']):
-                    c.privmsg(self.channel, 
-                        f"{contestant['nick']} at {contestant['timestamp']} - Score: {contestant['score']:.2f}")
-        else:
-            c.privmsg(self.channel, "No participants today.")
+                # Get today's contestants list with attempt details
+                date = now.date()
+                daily_key = f'{date.year}-{date.month}-{date.day}'
+                contestants = self.scores['daily'].get(daily_key + '_contestants', [])
+                if contestants:
+                    try:
+                        safe_message = self._get_safe_string("Today's attempts in chronological order:", "contestants header")
+                        c.privmsg(self.channel, safe_message)
+                        for contestant in sorted(contestants, key=lambda x: x['timestamp']):
+                            message = f"{contestant['nick']} at {contestant['timestamp']} - Score: {contestant['score']:.2f}"
+                            safe_message = self._get_safe_string(message, "contestant entry")
+                            c.privmsg(self.channel, safe_message)
+                    except Exception as exc:
+                        self.logger.error(f"Error sending contestants list: {exc}")
+            else:
+                try:
+                    safe_message = self._get_safe_string("No participants today.", "no participants")
+                    c.privmsg(self.channel, safe_message)
+                except Exception as exc:
+                    self.logger.error(f"Error sending no participants message: {exc}")
 
-        # Weekly announcements (on Sunday)
-        if now.weekday() == 6:
-            messages = format_period_stats(scores['weekly'], "This week")
-            for message in messages:
-                c.privmsg(self.channel, message)
+            # Weekly announcements (on Sunday)
+            if now.weekday() == 6:
+                messages = format_period_stats(scores['weekly'], "This week")
+                for message in messages:
+                    try:
+                        safe_message = self._get_safe_string(message, "weekly announcement")
+                        c.privmsg(self.channel, safe_message)
+                    except Exception as exc:
+                        self.logger.error(f"Error sending weekly announcement: {exc}")
 
-        # Monthly announcements (on first day of month)
-        if now.day == 1:
-            last_month = (now.replace(day=1) - datetime.timedelta(days=1)).month
-            last_month_key = f'{now.year}-{last_month}'
-            monthly_scores = self.scores.get('monthly', {}).get(last_month_key, {})
-            messages = format_period_stats(monthly_scores, "Last month")
-            for message in messages:
-                c.privmsg(self.channel, message)
+            # Monthly announcements (on first day of month)
+            if now.day == 1:
+                last_month = (now.replace(day=1) - datetime.timedelta(days=1)).month
+                last_month_key = f'{now.year}-{last_month}'
+                monthly_scores = self.scores.get('monthly', {}).get(last_month_key, {})
+                messages = format_period_stats(monthly_scores, "Last month")
+                for message in messages:
+                    try:
+                        safe_message = self._get_safe_string(message, "monthly announcement")
+                        c.privmsg(self.channel, safe_message)
+                    except Exception as exc:
+                        self.logger.error(f"Error sending monthly announcement: {exc}")
 
-        # Yearly announcements (on first day of year)
-        if now.month == 1 and now.day == 1:
-            last_year = now.year - 1
-            yearly_scores = self.scores.get('yearly', {}).get(str(last_year), {})
-            messages = format_period_stats(yearly_scores, "Last year")
-            for message in messages:
-                c.privmsg(self.channel, message)
+            # Yearly announcements (on first day of year)
+            if now.month == 1 and now.day == 1:
+                last_year = now.year - 1
+                yearly_scores = self.scores.get('yearly', {}).get(str(last_year), {})
+                messages = format_period_stats(yearly_scores, "Last year")
+                for message in messages:
+                    try:
+                        safe_message = self._get_safe_string(message, "yearly announcement")
+                        c.privmsg(self.channel, safe_message)
+                    except Exception as exc:
+                        self.logger.error(f"Error sending yearly announcement: {exc}")
+                        
+        except Exception as exc:
+            self.logger.error(f"Unexpected error in make_announcements: {exc}")
 
     def on_disconnect(self, c, e):
-        self.connect()
+        """Handle disconnection with retry logic"""
+        self.logger.info("Disconnected from server, attempting to reconnect...")
+        try:
+            self.connect()
+        except Exception as exc:
+            self.logger.error(f"Error during reconnection: {exc}")
+            # Wait a bit before the bot framework tries again
+            time.sleep(5)
 
     def send_statistics(self, e):
         c = self.connection
@@ -455,9 +539,31 @@ class LeetBot(irc.bot.SingleServerIRCBot):
                 f"{i}. {nick} - Score: {score:.2f}{time_str}, Participations: {participations}")
 
 def main():
-    # Use environment variables configured at the top of the file
-    bot = LeetBot(IRC_CHANNEL, IRC_NICKNAME, IRC_SERVER, IRC_PORT)
-    bot.start()
+    """Main function with error handling and retry logic"""
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
+    while True:
+        try:
+            # Use environment variables configured at the top of the file
+            logger.info(f"Starting LeetBot - connecting to {IRC_SERVER}:{IRC_PORT} channel {IRC_CHANNEL}")
+            bot = LeetBot(IRC_CHANNEL, IRC_NICKNAME, IRC_SERVER, IRC_PORT)
+            bot.start()
+        except KeyboardInterrupt:
+            logger.info("Bot shutdown requested by user")
+            break
+        except UnicodeDecodeError as e:
+            logger.error(f"Unicode decode error: {e}")
+            logger.info("Restarting bot in 10 seconds...")
+            time.sleep(10)
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            logger.info("Restarting bot in 30 seconds...")
+            time.sleep(30)
 
 if __name__ == "__main__":
     main()
