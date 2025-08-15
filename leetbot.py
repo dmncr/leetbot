@@ -18,8 +18,13 @@ IRC_NICKNAME = os.getenv('IRC_NICKNAME', 'LeetBot13373712')
 
 class LeetBot(irc.bot.SingleServerIRCBot):
     def __init__(self, channel, nickname, server, port=6667):
-        super().__init__([(server, port)], nickname, nickname)
+        # Store connection details for reconnection
+        self.server = server
+        self.port = port
         self.channel = channel
+        self.nickname = nickname
+        
+        super().__init__([(server, port)], nickname, nickname)
         self.scores = {}
         self.lock = threading.Lock()
         
@@ -28,19 +33,104 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         
+        # Patch the reactor to handle encoding errors
+        self._patch_reactor_for_encoding()
+        
         self.load_scores()
         threading.Thread(target=self.schedule_announcements, daemon=True).start()
+
+    def _patch_reactor_for_encoding(self):
+        """Patch the reactor to handle encoding errors gracefully"""
+        try:
+            original_process_data = self.reactor.process_data
+            
+            def safe_process_data(*args, **kwargs):
+                try:
+                    return original_process_data(*args, **kwargs)
+                except UnicodeDecodeError as e:
+                    self.logger.warning(f"Unicode decode error in reactor: {e}")
+                    # Skip this data and continue
+                    return
+                except Exception as e:
+                    self.logger.error(f"Unexpected error in reactor: {e}")
+                    raise
+                    
+            self.reactor.process_data = safe_process_data
+            self.logger.info("Reactor patched for encoding error handling")
+        except Exception as e:
+            self.logger.warning(f"Could not patch reactor: {e}")
+
+    def _get_connection(self):
+        """Override to set encoding on connection creation"""
+        connection = super()._get_connection()
+        try:
+            # Set encoding to handle errors gracefully from the start
+            if hasattr(connection, 'buffer'):
+                connection.buffer.encoding = 'utf-8'
+                connection.buffer.errors = 'replace'
+                self.logger.info("Connection encoding set to utf-8 with 'replace' error handling")
+        except Exception as e:
+            self.logger.warning(f"Could not set encoding error handling on connection creation: {e}")
+        return connection
+
+    def start(self):
+        """Override start to ensure all connections have proper encoding"""
+        try:
+            # Patch all existing connections
+            for connection in self.reactor.connections:
+                try:
+                    if hasattr(connection, 'buffer'):
+                        connection.buffer.encoding = 'utf-8'
+                        connection.buffer.errors = 'replace'
+                        self.logger.info(f"Patched existing connection encoding")
+                except Exception as e:
+                    self.logger.warning(f"Could not patch existing connection: {e}")
+            
+            # Start the bot
+            super().start()
+        except UnicodeDecodeError as e:
+            self.logger.error(f"Unicode decode error during start: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error starting bot: {e}")
+            raise
 
     def on_connect(self, connection, event):
         """Override to set encoding error handling after connection is established"""
         try:
-            # Set encoding to handle errors gracefully
-            connection.buffer.encoding = 'utf-8'
-            connection.buffer.errors = 'replace'  # Replace invalid bytes with '?'
-            self.logger.info("Connection encoding set to utf-8 with 'replace' error handling")
+            # Double-check encoding is set properly
+            if hasattr(connection, 'buffer'):
+                connection.buffer.encoding = 'utf-8'
+                connection.buffer.errors = 'replace'
+                self.logger.info("Connection encoding verified: utf-8 with 'replace' error handling")
+                
+                # Patch the connection's process_data method to handle encoding errors
+                original_process_data = connection.process_data
+                
+                def safe_process_data():
+                    try:
+                        return original_process_data()
+                    except UnicodeDecodeError as e:
+                        self.logger.warning(f"Unicode decode error in connection process_data: {e}")
+                        # Clear the buffer to avoid repeated errors
+                        if hasattr(connection, 'buffer') and hasattr(connection.buffer, 'buffer'):
+                            connection.buffer.buffer = b''
+                        return
+                    except Exception as e:
+                        self.logger.error(f"Unexpected error in connection process_data: {e}")
+                        raise
+                        
+                connection.process_data = safe_process_data
+                self.logger.info("Connection process_data patched for encoding errors")
+                
         except Exception as e:
-            self.logger.warning(f"Could not set encoding error handling: {e}")
-        super().on_connect(connection, event)
+            self.logger.warning(f"Could not verify encoding error handling: {e}")
+        
+        # Call parent method to handle normal connection logic
+        try:
+            super().on_connect(connection, event)
+        except Exception as e:
+            self.logger.error(f"Error in parent on_connect: {e}")
 
     def _get_safe_string(self, input_str, context=""):
         """Safely convert any input to a clean UTF-8 string"""
@@ -416,7 +506,9 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         """Handle disconnection with retry logic"""
         self.logger.info("Disconnected from server, attempting to reconnect...")
         try:
-            self.connect()
+            # The SingleServerIRCBot will handle reconnection automatically
+            # We just need to wait a bit and let the framework handle it
+            pass
         except Exception as exc:
             self.logger.error(f"Error during reconnection: {exc}")
             # Wait a bit before the bot framework tries again
