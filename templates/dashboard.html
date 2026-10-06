@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>Scoreboard · LeetBot</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to statistics</a>
+  <header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">13</span> leetbot<span class="brand-slash">/</span>stats</a>
+    <div class="topbar-right"><span class="live-badge"><span aria-hidden="true">●</span> Refreshes every minute</span>
+      <form method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="subtle" type="submit">Sign out ↗</button></form>
+    </div>
+  </header>
+  <aside class="sidebar" aria-label="Sections">
+    <p class="nav-label">THE COMPETITION</p>
+    <nav><a class="active" href="#overview">Overview <span>01</span></a><a href="#leaderboards">Leaderboards <span>02</span></a><a href="#activity">Attendance <span>03</span></a><a href="#timing">Timing lab <span>04</span></a><a href="#champions">Hall of fame <span>05</span></a><a href="#attempts">Attempt log <span>06</span></a></nav>
+    <div class="sidebar-note"><span class="nav-label">HOW TO PLAY</span><p>Type <code>1337</code> in IRC.<br>Aim for <strong>13:37:37</strong>.<br>Get closer. Get glory.</p><span id="sidebar-zone" class="small muted"></span></div>
+  </aside>
+  <main id="main">
+    <section id="overview" class="hero">
+      <div><p class="eyebrow">IRC / THE 1337 CHALLENGE</p><h1>mbhooden <span class="gradient">1337 showdown</span></h1><p class="muted">A daily ritual. A very small window. A very competitive channel.</p></div>
+      <div class="target-clock"><span class="eyebrow">THE MOMENT TO BEAT</span><strong>13:37:37<span>.000</span></strong><span class="small muted" id="timezone">Loading timezone…</span></div>
+    </section>
+    <div class="filters">
+      <div class="periods" role="group" aria-label="Leaderboard period">
+        <button data-period="day" aria-pressed="false">Day</button><button data-period="week" aria-pressed="false">Week</button><button data-period="month" aria-pressed="false">Month</button><button data-period="year" aria-pressed="false">Year</button><button data-period="all" class="selected" aria-pressed="true">All time</button>
+      </div>
+      <label class="date-label" for="anchor">Date <input type="date" id="anchor" min="0002-01-01" max="9998-12-31"></label>
+      <button class="subtle" id="latest" type="button">Latest game ↗</button>
+      <span id="status" class="small muted" role="status" aria-live="polite">Loading statistics…</span>
+    </div>
+    <p id="scope" class="small muted"></p>
+    <div id="error" class="error" role="alert" hidden></div>
+    <section class="metrics" aria-label="Selected period statistics">
+      <article class="metric"><span class="metric-label">ATTEMPTS</span><strong id="total-attempts">—</strong><span id="active-days" class="muted small">Recorded messages</span></article>
+      <article class="metric"><span class="metric-label">PLAYERS</span><strong id="total-players">—</strong><span class="muted small">Unique IRC nicknames</span></article>
+      <article class="metric"><span class="metric-label">CLOSEST ATTEMPT</span><strong id="closest">—</strong><span id="closest-user" class="muted small">Absolute distance to target</span></article>
+      <article class="metric featured"><span class="metric-label">ALL-TIME HIGH SCORE</span><strong id="record-score">—</strong><span id="record-user" class="muted small">Across the entire archive</span></article>
+    </section>
+    <section id="leaderboards" class="section">
+      <div class="section-heading"><div><p class="eyebrow">01 / THE RANKINGS</p><h2>Chase the top spot.</h2></div><label class="search-label">Find a player<input id="search" type="search" placeholder="Search nicknames…" autocomplete="off"></label></div>
+      <article class="panel"><div class="panel-heading"><div><h3>Score leaderboard</h3><p class="small muted">Best attempt in the selected period. Exact score ties share a rank.</p></div><span class="tag" id="board-period">ALL TIME</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th><button data-sort="score">Best score ↓</button></th><th><button data-sort="average_score">Avg. score</button></th><th><button data-sort="days">Days played</button></th><th><button data-sort="attempts">Attempts</button></th><th><button data-sort="wins">Daily wins</button></th><th><button data-sort="longest_streak">Best streak</button></th></tr></thead><tbody id="leaderboard-body"></tbody></table></div>
+      </article>
+      <article class="panel accuracy-panel"><div class="panel-heading"><div><h3>Precision leaderboard</h3><p class="small muted">Average absolute distance across every recorded attempt. Lower is better.</p></div><label class="small muted">Minimum days <input id="min-days" type="number" min="1" max="365" value="5"></label></div>
+        <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th>Mean distance</th><th>Median distance</th><th>Std. deviation</th><th>Closest</th><th>Days played</th></tr></thead><tbody id="accuracy-body"></tbody></table></div>
+      </article>
+    </section>
+    <section id="activity" class="section">
+      <div class="section-heading"><div><p class="eyebrow">02 / SHOWING UP IS HALF THE GAME</p><h2>The channel’s pulse.</h2></div></div>
+      <article class="panel"><div class="panel-heading"><div><h3>Attendance over time</h3><p class="small muted">Unique players and total attempts. Gaps between recorded games count as zero.</p></div><label class="small muted">Group by <select id="graph-group"><option value="day">Day</option><option value="month">Month</option></select></label></div><div class="chart-legend"><span class="legend-blue">● Players</span><span class="legend-purple">● Attempts</span></div><div id="attendance-chart" class="chart"></div></article>
+      <article class="panel heat-panel"><div class="panel-heading"><div><h3>A year of 1337</h3><p class="small muted">Daily unique players in the selected period. Hover or focus a square for details.</p></div><label class="small muted">Calendar year <select id="heat-year"></select></label></div><div id="heatmap" class="heatmap"></div><p class="small muted heat-legend">Less <span class="heat-swatch h0"></span><span class="heat-swatch h1"></span><span class="heat-swatch h2"></span><span class="heat-swatch h3"></span><span class="heat-swatch h4"></span> More · outlined days fall outside the selected period</p></article>
+    </section>
+    <section id="timing" class="section">
+      <div class="section-heading"><div><p class="eyebrow">03 / UNREASONABLY SPECIFIC STATISTICS</p><h2>Inside the timing lab.</h2></div></div>
+      <div class="two-columns"><article class="panel"><div class="panel-heading"><div><h3>When did everyone hit send?</h3><p class="small muted">Attempts per second within the 13:37 minute. The line marks the target.</p></div></div><div id="timing-chart" class="chart"></div></article>
+        <article class="panel"><div class="panel-heading"><h3>The nerd numbers</h3><span class="tag">RECEIPT TIME</span></div><dl class="nerd-stats" id="nerd-stats"></dl></article></div>
+    </section>
+    <section id="champions" class="section">
+      <div class="section-heading"><div><p class="eyebrow">04 / FOR THE RECORD</p><h2>A little well-earned glory.</h2></div><label class="small muted">Champions <select id="winner-period"><option value="daily">Daily</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
+      <article class="panel"><div class="panel-heading"><p class="small muted">Calendar champions for periods represented in this selection. Score ties share the win.</p><span id="winner-count" class="tag"></span></div><div class="table-wrap"><table><thead><tr><th>Period</th><th>Winner</th><th>Best score</th><th>Players</th><th>Attempts</th></tr></thead><tbody id="winners-body"></tbody></table></div><button id="more-winners" class="subtle more-button" type="button" hidden>Show more champions ↓</button></article>
+    </section>
+    <section id="attempts" class="section">
+      <div class="section-heading"><div><p class="eyebrow">05 / EVERY ATTEMPT HAS A STORY</p><h2>The last 30 shots.</h2></div></div>
+      <article class="panel"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Player</th><th>Received at</th><th>Distance to target</th><th>Score</th><th>Origin</th></tr></thead><tbody id="attempts-body"></tbody></table></div></article>
+    </section>
+    <footer><p><strong>Small window. Big commitment.</strong> LeetBot / 1337 statistics</p><p>Timing uses the bot’s receipt time, including network latency. Historical scores are preserved; timing always measures distance to 13:37:37. Summary-only legacy data is excluded from attendance and averages.</p><p id="import-note" class="small muted"></p></footer>
+  </main>
+</body>
+</html>

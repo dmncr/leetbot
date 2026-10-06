@@ -1,662 +1,248 @@
-import irc.bot
-import irc.strings
-from irc.client import ip_numstr_to_quad, ip_quad_to_numstr
-import time
-import datetime
-import threading
-import json
-import os
-import re
+"""IRC competition bot. Socket writes and announcements stay on the reactor."""
+from collections import deque
+from datetime import datetime, timedelta
 import logging
+import os
+import signal
+import socket
+import threading
+import time
+from zoneinfo import ZoneInfo
 
-# Get configuration from environment variables with defaults
-IRC_SERVER = os.getenv('IRC_SERVER', 'portlane.se.quakenet.org')
-IRC_PORT = int(os.getenv('IRC_PORT', '6667'))
-IRC_CHANNEL = os.getenv('IRC_CHANNEL', '#mbhooden')
-IRC_NICKNAME = os.getenv('IRC_NICKNAME', 'LeetBot13373712')
+import irc.bot
+import irc.client
+from jaraco.stream.buffer import DecodingLineBuffer
+from waitress import create_server
+
+from game import LEET, calculate_score, nick_key
+from storage import ScoreStore
+from webapp import create_app
+
+logger = logging.getLogger(__name__)
+
+
+class SafeBuffer(DecodingLineBuffer):
+    errors = 'replace'
+
+
+def connect_socket(address):
+    # Bound connect/send/receive stalls, including during graceful shutdown.
+    return socket.create_connection(address, timeout=5)
 
 
 class LeetBot(irc.bot.SingleServerIRCBot):
-    def __init__(self, channel, nickname, server, port=6667):
-        # Store connection details for reconnection
-        self.server = server
-        self.port = port
+    def __init__(self, channel, nickname, server, port=6667, *, store=None,
+                 timezone=None, stats_url=None, stats_password=None):
+        super().__init__([(server, port)], nickname, nickname, recon=irc.bot.ExponentialBackoff(),
+                         connect_factory=connect_socket)
+        self.connection.buffer_class = SafeBuffer
         self.channel = channel
-        self.nickname = nickname
-        
-        super().__init__([(server, port)], nickname, nickname)
-        self.scores = {}
-        self.lock = threading.Lock()
-        
-        # Configure encoding error handling for better resilience
-        # Set up logging for encoding issues
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
-        
-        # Patch the reactor to handle encoding errors
-        self._patch_reactor_for_encoding()
-        
-        self.load_scores()
-        threading.Thread(target=self.schedule_announcements, daemon=True).start()
+        self.timezone = ZoneInfo(timezone or os.getenv('GAME_TIMEZONE', os.getenv('TZ', 'Europe/Stockholm')))
+        self.store = store or ScoreStore(os.getenv('DATABASE_PATH', 'data/leetbot.sqlite3'), str(self.timezone))
+        self.stats_url = stats_url if stats_url is not None else os.getenv('STATS_URL', 'http://localhost:8080')
+        self.stats_password = stats_password if stats_password is not None else os.getenv('STATS_PASSWORD', '')
+        for value in (self.stats_url, self.stats_password):
+            if any(ord(c) < 32 for c in value):
+                raise ValueError('Stats URL/password cannot contain control characters')
+        self.outbox = deque(maxlen=500)
+        self.last_command = 0.0
+        self.joined = False
+        self.reactor.scheduler.execute_every(1, self.tick)
 
-    def _patch_reactor_for_encoding(self):
-        """Patch the reactor to handle encoding errors gracefully"""
-        try:
-            original_process_data = self.reactor.process_data
-            
-            def safe_process_data(*args, **kwargs):
-                try:
-                    return original_process_data(*args, **kwargs)
-                except UnicodeDecodeError as e:
-                    self.logger.warning(f"Unicode decode error in reactor: {e}")
-                    # Skip this data and continue
-                    return
-                except Exception as e:
-                    self.logger.error(f"Unexpected error in reactor: {e}")
-                    raise
-                    
-            self.reactor.process_data = safe_process_data
-            self.logger.info("Reactor patched for encoding error handling")
-        except Exception as e:
-            self.logger.warning(f"Could not patch reactor: {e}")
+    def now(self):
+        return datetime.now(self.timezone)
 
-    def _get_connection(self):
-        """Override to set encoding on connection creation"""
-        connection = super()._get_connection()
-        try:
-            # Set encoding to handle errors gracefully from the start
-            if hasattr(connection, 'buffer'):
-                connection.buffer.encoding = 'utf-8'
-                connection.buffer.errors = 'replace'
-                self.logger.info("Connection encoding set to utf-8 with 'replace' error handling")
-        except Exception as e:
-            self.logger.warning(f"Could not set encoding error handling on connection creation: {e}")
-        return connection
+    @staticmethod
+    def is_leet_message(message):
+        return bool(LEET.search(message))
 
-    def start(self):
-        """Override start to ensure all connections have proper encoding"""
-        try:
-            # Patch all existing connections
-            for connection in self.reactor.connections:
-                try:
-                    if hasattr(connection, 'buffer'):
-                        connection.buffer.encoding = 'utf-8'
-                        connection.buffer.errors = 'replace'
-                        self.logger.info(f"Patched existing connection encoding")
-                except Exception as e:
-                    self.logger.warning(f"Could not patch existing connection: {e}")
-            
-            # Start the bot
-            super().start()
-        except UnicodeDecodeError as e:
-            self.logger.error(f"Unicode decode error during start: {e}")
-            raise
-        except Exception as e:
-            self.logger.error(f"Error starting bot: {e}")
-            raise
+    calculate_score = staticmethod(calculate_score)
 
-    def on_connect(self, connection, event):
-        """Override to set encoding error handling after connection is established"""
-        try:
-            # Double-check encoding is set properly
-            if hasattr(connection, 'buffer'):
-                connection.buffer.encoding = 'utf-8'
-                connection.buffer.errors = 'replace'
-                self.logger.info("Connection encoding verified: utf-8 with 'replace' error handling")
-                
-                # Patch the connection's process_data method to handle encoding errors
-                original_process_data = connection.process_data
-                
-                def safe_process_data():
-                    try:
-                        return original_process_data()
-                    except UnicodeDecodeError as e:
-                        self.logger.warning(f"Unicode decode error in connection process_data: {e}")
-                        # Clear the buffer to avoid repeated errors
-                        if hasattr(connection, 'buffer') and hasattr(connection.buffer, 'buffer'):
-                            connection.buffer.buffer = b''
-                        return
-                    except Exception as e:
-                        self.logger.error(f"Unexpected error in connection process_data: {e}")
-                        raise
-                        
-                connection.process_data = safe_process_data
-                self.logger.info("Connection process_data patched for encoding errors")
-                
-        except Exception as e:
-            self.logger.warning(f"Could not verify encoding error handling: {e}")
-        
-        # Call parent method to handle normal connection logic
-        try:
-            super().on_connect(connection, event)
-        except Exception as e:
-            self.logger.error(f"Error in parent on_connect: {e}")
+    def update_scores(self, nick, score, timestamp):
+        self.store.add_attempt(nick, score, timestamp)
 
-    def _get_safe_string(self, input_str, context=""):
-        """Safely convert any input to a clean UTF-8 string"""
-        try:
-            if isinstance(input_str, str):
-                # Try to encode and decode to clean up any problematic characters
-                return input_str.encode('utf-8', 'ignore').decode('utf-8', 'replace')
-            elif isinstance(input_str, bytes):
-                return input_str.decode('utf-8', 'replace')
-            else:
-                return str(input_str).encode('utf-8', 'ignore').decode('utf-8', 'replace')
-        except Exception as e:
-            self.logger.warning(f"Error cleaning string in {context}: {e}")
-            return "<?>"  # Return a safe placeholder
+    def say(self, target, message):
+        # Leave room for server prefix; split by UTF-8 bytes without splitting characters.
+        clean = ''.join(c for c in str(message) if ord(c) >= 32)
+        if any(c in target for c in '\r\n\0 '):
+            raise ValueError('Invalid IRC target')
+        budget = max(64, 380 - len(target.encode('utf-8')))
+        chunk, size = '', 0
+        for char in clean:
+            width = len(char.encode('utf-8'))
+            if size + width > budget:
+                self.outbox.append((target, chunk))
+                chunk, size = '', 0
+            chunk += char
+            size += width
+        if chunk:
+            self.outbox.append((target, chunk))
+
+    def send_stats_link(self, target):
+        self.say(target, f'Stats: {self.stats_url} | Login password: {self.stats_password}')
 
     def on_nicknameinuse(self, c, e):
-        c.nick(c.get_nickname() + "_")
+        c.nick(c.get_nickname()[:25] + '_')
 
     def on_welcome(self, c, e):
         c.join(self.channel)
-        c.privmsg(self.channel, "LeetBot is now online! Type '!help' for commands.")
 
-    def on_pubmsg(self, c, e):
-        try:
-            now = datetime.datetime.now()
-            start_time = now.replace(hour=13, minute=37, second=0, microsecond=0)
-            end_time = now.replace(hour=13, minute=38, second=0, microsecond=0)
-            
-            # Safely extract message and nickname with encoding error handling
-            message = self._get_safe_string(e.arguments[0] if e.arguments else "", "message").strip()
-            nick = self._get_safe_string(e.source.nick if hasattr(e.source, 'nick') else "unknown", "nickname")
+    def on_join(self, c, e):
+        if nick_key(e.source.nick) == nick_key(c.get_nickname()):
+            self.joined = True
+            self.say(self.channel, "LeetBot is online! Type '!help' for commands.")
 
-            if nick != self.connection.get_nickname() and '!timetest' in message.lower():
-                self.send_time(e, now)
-            elif start_time <= now <= end_time and self.is_leet_message(message):
-                score = self.calculate_score(now)
-                with self.lock:
-                    self.update_scores(nick, score, now)
-            elif message.lower() == '!help':
-                self.send_help(e)
-            elif message.lower() == '!time':
-                self.send_time(e, now)
-            elif message.lower() == '!highscores':
-                self.send_highscores(e)
-            elif message.lower() in ['!toptoday', '!topweek', '!topmonth', '!topyear']:
-                self.send_top_scores(e, message.lower()[4:])  # Remove '!top' prefix
-            elif message.lower() == '!statistics':
-                self.send_statistics(e)
-                
-        except Exception as exc:
-            self.logger.error(f"Unexpected error in on_pubmsg: {exc}")
-            # Continue running despite errors
-
-    def is_leet_message(self, message):
-        pattern = re.compile(r'\b(1|i|l)(3|e){2}(7|t)\b', re.IGNORECASE)
-        return bool(pattern.search(message))
-
-    def calculate_score(self, timestamp):
-        target_times = [
-            timestamp.replace(hour=13, minute=37, second=37, microsecond=37),
-        ]
-        min_diff = min(abs((timestamp - t).total_seconds()) for t in target_times)
-        
-        if min_diff > 13:
-            return 1
-            
-        # Calculate logarithmic score between 0-13 seconds
-        # Using natural log to create smooth falloff
-        # Subtract from 100 so closer times = higher scores
-        score = 100 - (100 * (min_diff / 13))
-        return score
-
-    def update_scores(self, nick, score, timestamp):
-        date = timestamp.date()
-        week = date.isocalendar()[1]
-        month = date.month
-        year = date.year
-        day = date.day
-
-        self.scores.setdefault('daily', {})
-        self.scores.setdefault('weekly', {})
-        self.scores.setdefault('monthly', {})
-        self.scores.setdefault('yearly', {})
-
-        daily_key = f'{year}-{month}-{day}'
-        weekly_key = f'{year}-W{week}'
-        monthly_key = f'{year}-{month}'
-        yearly_key = f'{year}'
-
-        self.scores['daily'].setdefault(daily_key, {})
-        self.scores['weekly'].setdefault(weekly_key, {})
-        self.scores['monthly'].setdefault(monthly_key, {})
-        self.scores['yearly'].setdefault(yearly_key, {})
-
-        # Store contestant details including timestamp and score
-        self.scores['daily'].setdefault(daily_key + '_contestants', [])
-        self.scores['daily'][daily_key + '_contestants'].append({
-            'nick': nick,
-            'timestamp': timestamp.strftime('%H:%M:%S.%f'),
-            'score': score
-        })
-
-        # Helper function to update score with timestamp
-        def update_period_score(period_dict, key, nick, new_score, timestamp_str):
-            current = period_dict.get(key, {}).get(nick, {'score': 0})
-            if isinstance(current, (int, float)):  # Handle old format
-                current = {'score': current}
-            if new_score > current['score']:
-                period_dict[key][nick] = {
-                    'score': new_score,
-                    'timestamp': timestamp_str
-                }
-
-        timestamp_str = timestamp.strftime('%H:%M:%S.%f')
-        update_period_score(self.scores['daily'], daily_key, nick, score, timestamp_str)
-        update_period_score(self.scores['weekly'], weekly_key, nick, score, timestamp_str)
-        update_period_score(self.scores['monthly'], monthly_key, nick, score, timestamp_str)
-        update_period_score(self.scores['yearly'], yearly_key, nick, score, timestamp_str)
-
-        self.save_scores()
-
-    def save_scores(self):
-        with open('scores.json', 'w') as f:
-            json.dump(self.scores, f)
-
-    def load_scores(self):
-        try:
-            if os.path.exists('scores.json') and os.path.getsize('scores.json') > 0:
-                with open('scores.json', 'r') as f:
-                    self.scores = json.load(f)
-            else:
-                self.scores = {
-                    'daily': {},
-                    'weekly': {},
-                    'monthly': {},
-                    'yearly': {}
-                }
-        except json.JSONDecodeError:
-            # If the file is corrupted, initialize with empty structure
-            self.scores = {
-                'daily': {},
-                'weekly': {},
-                'monthly': {},
-                'yearly': {}
-            }
-
-    def send_help(self, e):
-        c = self.connection
-        help_messages = [
-            "Commands:",
-            "!help - Show this help message.",
-            "!timetest - Show current server time.",
-            "!highscores - Display current high scores.",
-            "!toptoday - Show top 5 players today (score and participation).",
-            "!topweek - Show top 5 players this week.",
-            "!topmonth - Show top 5 players this month.",
-            "!topyear - Show top 5 players this year.",
-            "!statistics - Show lifetime statistics for all players.",
-            "Type '1337' or similar between 13:37:00 and 13:38:00 to participate."
-        ]
-        for line in help_messages:
-            try:
-                safe_line = self._get_safe_string(line, "help message")
-                c.privmsg(e.target, safe_line)
-            except Exception as exc:
-                self.logger.error(f"Error sending help message: {exc}")
-
-    def send_time(self, e, timestamp):
-        try:
-            c = self.connection
-            time_str = timestamp.strftime('%H:%M:%S.%f')[:-3]  # Format with milliseconds
-            message = f"Current server time: {time_str}"
-            safe_message = self._get_safe_string(message, "time message")
-            c.privmsg(e.target, safe_message)
-        except Exception as exc:
-            self.logger.error(f"Error sending time message: {exc}")
-
-    def send_highscores(self, e):
-        c = self.connection
-        now = datetime.datetime.now()
-        scores = self.get_current_scores(now)
-
-        def format_scores(title, scores_dict):
-            if scores_dict:
-                # Extract score value, handling both old (number) and new (dict) formats
-                def get_score(item):
-                    nick, score_data = item
-                    return score_data['score'] if isinstance(score_data, dict) else score_data
-                
-                sorted_scores = sorted(scores_dict.items(), key=lambda x: get_score(x), reverse=True)
-                total_score = sum(get_score(item) for item in sorted_scores)
-                avg_score = total_score / len(sorted_scores)
-                
-                scores_text = []
-                for nick, score_data in sorted_scores:
-                    if isinstance(score_data, dict):
-                        score = score_data['score']
-                        timestamp = score_data.get('timestamp', 'unknown time')
-                        scores_text.append(f"{nick}: {score:.2f} ({timestamp})")
-                    else:
-                        scores_text.append(f"{nick}: {score_data:.2f}")
-                        
-                stats = f"(Total: {total_score:.2f}, Avg: {avg_score:.2f}, Participants: {len(sorted_scores)})"
-                return f"{title}: {', '.join(scores_text)} {stats}"
-            else:
-                return f"{title}: No participants."
-
-        messages = [
-            format_scores("Daily High Scores", scores['daily']),
-            format_scores("Weekly High Scores", scores['weekly']),
-            format_scores("Monthly High Scores", scores['monthly']),
-            format_scores("Yearly High Scores", scores['yearly']),
-        ]
-        for message in messages:
-            c.privmsg(e.target, message)
-
-    def get_current_scores(self, now):
-        date = now.date()
-        week = date.isocalendar()[1]
-        month = date.month
-        year = date.year
-        day = date.day
-
-        daily_key = f'{year}-{month}-{day}'
-        weekly_key = f'{year}-W{week}'
-        monthly_key = f'{year}-{month}'
-        yearly_key = f'{year}'
-
-        with self.lock:
-            daily_scores = self.scores.get('daily', {}).get(daily_key, {})
-            weekly_scores = self.scores.get('weekly', {}).get(weekly_key, {})
-            monthly_scores = self.scores.get('monthly', {}).get(monthly_key, {})
-            yearly_scores = self.scores.get('yearly', {}).get(yearly_key, {})
-
-        return {
-            'daily': daily_scores,
-            'weekly': weekly_scores,
-            'monthly': monthly_scores,
-            'yearly': yearly_scores,
-        }
-
-    def schedule_announcements(self):
-        while True:
-            now = datetime.datetime.now()
-            
-            # Schedule pre-game announcement at 13:36:00
-            pregame_time = now.replace(hour=13, minute=36, second=0, microsecond=0)
-            if now >= pregame_time:
-                pregame_time += datetime.timedelta(days=1)
-            
-            # Schedule post-game announcement at 13:38:30
-            target_time = now.replace(hour=13, minute=38, second=30, microsecond=0)
-            if now >= target_time:
-                target_time += datetime.timedelta(days=1)
-            
-            # Sleep until next scheduled announcement
-            next_time = min(pregame_time, target_time)
-            time.sleep((next_time - now).total_seconds())
-            
-            # Send appropriate announcement
-            if next_time == pregame_time:
-                time_str = pregame_time.strftime('%H:%M:%S.%f')[:-3]  # Format with milliseconds like !timetest
-                self.connection.privmsg(self.channel, f"The game of games is about to begin! Server time is: {time_str}")
-            else:
-                self.make_announcements()
-
-    def make_announcements(self):
-        try:
-            c = self.connection
-            now = datetime.datetime.now()
-            scores = self.get_current_scores(now)
-
-            def format_period_stats(scores_dict, period):
-                if scores_dict:
-                    def get_score(item):
-                        nick, score_data = item
-                        return score_data['score'] if isinstance(score_data, dict) else score_data
-                    
-                    total_score = sum(get_score(item) for item in scores_dict.items())
-                    avg_score = total_score / len(scores_dict)
-                    sorted_scores = sorted(scores_dict.items(), key=lambda x: get_score(x), reverse=True)
-                    high_scorer = sorted_scores[0]
-                    
-                    winner_score = get_score(('', high_scorer[1]))
-                    winner_time = high_scorer[1].get('timestamp', '') if isinstance(high_scorer[1], dict) else ''
-                    winner_time_str = f" at {winner_time}" if winner_time else ""
-                    
-                    summary = (f"{period}'s winner is {high_scorer[0]} with a score of {winner_score:.2f}{winner_time_str}! " 
-                             f"Total score: {total_score:.2f}, Average: {avg_score:.2f}, "
-                             f"Participants: {len(scores_dict)}")
-                    
-                    # Format all player scores with timestamps
-                    scores_list = []
-                    for nick, score_data in sorted_scores:
-                        score = get_score(('', score_data))
-                        timestamp = score_data.get('timestamp', '') if isinstance(score_data, dict) else ''
-                        time_str = f" at {timestamp}" if timestamp else ""
-                        scores_list.append(f"{nick}: {score:.2f}{time_str}")
-                    
-                    return [summary, f"All scores: {', '.join(scores_list)}"]
-                return [f"No participants {period.lower()}."]
-
-            # Daily announcements
-            if scores['daily']:
-                messages = format_period_stats(scores['daily'], "Today")
-                for message in messages:
-                    try:
-                        safe_message = self._get_safe_string(message, "daily announcement")
-                        c.privmsg(self.channel, safe_message)
-                    except Exception as exc:
-                        self.logger.error(f"Error sending daily announcement: {exc}")
-
-                # Get today's contestants list with attempt details
-                date = now.date()
-                daily_key = f'{date.year}-{date.month}-{date.day}'
-                contestants = self.scores['daily'].get(daily_key + '_contestants', [])
-                if contestants:
-                    try:
-                        safe_message = self._get_safe_string("Today's attempts in chronological order:", "contestants header")
-                        c.privmsg(self.channel, safe_message)
-                        for contestant in sorted(contestants, key=lambda x: x['timestamp']):
-                            message = f"{contestant['nick']} at {contestant['timestamp']} - Score: {contestant['score']:.2f}"
-                            safe_message = self._get_safe_string(message, "contestant entry")
-                            c.privmsg(self.channel, safe_message)
-                    except Exception as exc:
-                        self.logger.error(f"Error sending contestants list: {exc}")
-            else:
-                try:
-                    safe_message = self._get_safe_string("No participants today.", "no participants")
-                    c.privmsg(self.channel, safe_message)
-                except Exception as exc:
-                    self.logger.error(f"Error sending no participants message: {exc}")
-
-            # Weekly announcements (on Sunday)
-            if now.weekday() == 6:
-                messages = format_period_stats(scores['weekly'], "This week")
-                for message in messages:
-                    try:
-                        safe_message = self._get_safe_string(message, "weekly announcement")
-                        c.privmsg(self.channel, safe_message)
-                    except Exception as exc:
-                        self.logger.error(f"Error sending weekly announcement: {exc}")
-
-            # Monthly announcements (on first day of month)
-            if now.day == 1:
-                last_month = (now.replace(day=1) - datetime.timedelta(days=1)).month
-                last_month_key = f'{now.year}-{last_month}'
-                monthly_scores = self.scores.get('monthly', {}).get(last_month_key, {})
-                messages = format_period_stats(monthly_scores, "Last month")
-                for message in messages:
-                    try:
-                        safe_message = self._get_safe_string(message, "monthly announcement")
-                        c.privmsg(self.channel, safe_message)
-                    except Exception as exc:
-                        self.logger.error(f"Error sending monthly announcement: {exc}")
-
-            # Yearly announcements (on first day of year)
-            if now.month == 1 and now.day == 1:
-                last_year = now.year - 1
-                yearly_scores = self.scores.get('yearly', {}).get(str(last_year), {})
-                messages = format_period_stats(yearly_scores, "Last year")
-                for message in messages:
-                    try:
-                        safe_message = self._get_safe_string(message, "yearly announcement")
-                        c.privmsg(self.channel, safe_message)
-                    except Exception as exc:
-                        self.logger.error(f"Error sending yearly announcement: {exc}")
-                        
-        except Exception as exc:
-            self.logger.error(f"Unexpected error in make_announcements: {exc}")
+    def on_kick(self, c, e):
+        if nick_key(e.arguments[0]) == nick_key(c.get_nickname()):
+            self.joined = False
+            self.reactor.scheduler.execute_after(5, lambda: c.join(self.channel) if c.is_connected() else None)
 
     def on_disconnect(self, c, e):
-        """Handle disconnection with retry logic"""
-        self.logger.info("Disconnected from server, attempting to reconnect...")
+        self.joined = False
+        self.outbox.clear()
+        logger.warning('IRC disconnected; framework will reconnect with backoff')
+
+    def on_pubmsg(self, c, e):
+        now = self.now()  # Capture receipt time before processing or storage.
         try:
-            # The SingleServerIRCBot will handle reconnection automatically
-            # We just need to wait a bit and let the framework handle it
-            pass
-        except Exception as exc:
-            self.logger.error(f"Error during reconnection: {exc}")
-            # Wait a bit before the bot framework tries again
-            time.sleep(5)
+            if nick_key(e.target) != nick_key(self.channel) or not e.source or not e.arguments:
+                return
+            nick = e.source.nick
+            if nick_key(nick) == nick_key(c.get_nickname()):
+                return
+            message = e.arguments[0].strip()
+            start = now.replace(hour=13, minute=37, second=0, microsecond=0)
+            end = start + timedelta(minutes=1)
+            if start <= now < end and self.is_leet_message(message):
+                self.update_scores(nick, self.calculate_score(now), now)
+                return
+            command = message.lower()
+            commands = {'!help', '!time', '!timetest', '!highscores', '!topscore', '!topscores',
+                        '!toptoday', '!topweek', '!topmonth', '!topyear', '!statistics'}
+            if command not in commands:
+                return
+            if time.monotonic() - self.last_command < 5 or len(self.outbox) > 50:
+                return
+            self.last_command = time.monotonic()
+            if command == '!help':
+                self.send_help(e)
+            elif command in ('!time', '!timetest'):
+                self.send_time(e, now)
+            elif command in ('!highscores', '!topscore', '!topscores'):
+                self.send_highscores(e)
+            elif command == '!statistics':
+                self.send_statistics(e)
+            else:
+                self.send_top_scores(e, command[4:])
+        except Exception:
+            logger.exception('Failed to process IRC message')
 
-    def send_statistics(self, e):
-        c = self.connection
-        user_stats = {}
+    def send_help(self, e):
+        self.say(e.target, 'Commands: !help, !time / !timetest, !topscore / !highscores, '
+                 '!toptoday, !topweek, !topmonth, !topyear, !statistics.')
+        self.say(e.target, f'Type 1337 or leet during 13:37:00 <= time < 13:38:00 ({self.timezone}). '
+                 'Target: 13:37:37.000000. Best attempt per period wins; retries are allowed.')
+        self.send_stats_link(e.target)
 
-        # Collect all daily contestant entries for complete statistics
-        for daily_key, daily_data in self.scores['daily'].items():
-            if not daily_key.endswith('_contestants'):
-                continue
+    def send_time(self, e, timestamp):
+        self.say(e.target, f'Server receipt time: {timestamp:%H:%M:%S.%f} ({self.timezone})')
 
-            for entry in daily_data:
-                nick = entry['nick']
-                score = entry['score']
-                
-                if nick not in user_stats:
-                    user_stats[nick] = {
-                        'tries': 0,
-                        'total_score': 0,
-                        'max_score': 0,
-                        'scores': []
-                    }
-                
-                stats = user_stats[nick]
-                stats['tries'] += 1
-                stats['total_score'] += score
-                stats['max_score'] = max(stats['max_score'], score)
-                stats['scores'].append(score)
+    def _scoreboard(self, target, period, anchor, title):
+        rows = self.store.leaderboard(period, anchor)
+        if not rows:
+            self.say(target, f'{title}: No participants.')
+        else:
+            self.say(target, f'{title} - Top 5:')
+            for rank, row in enumerate(rows[:5], 1):
+                stamp = f" at {row['local_time']}" if row.get('local_time') else ''
+                self.say(target, f"{rank}. {row['nick']}: {row['score']:.2f}{stamp} | "
+                         f"{row['attempts']} attempts / {row['days']} days")
 
-        # Sort users by number of tries, then by max score
-        sorted_users = sorted(
-            user_stats.items(),
-            key=lambda x: (-x[1]['tries'], -x[1]['max_score'])
-        )
-
-        c.privmsg(e.target, "Lifetime Statistics:")
-        for nick, stats in sorted_users:
-            avg_score = stats['total_score'] / stats['tries']
-            c.privmsg(e.target, 
-                f"{nick}: {stats['tries']} tries, "
-                f"Max score: {stats['max_score']:.2f}, "
-                f"Average score: {avg_score:.2f}")
+    def send_highscores(self, e):
+        now = self.now().date()
+        for period, title in [('day', 'Today'), ('week', 'This week'), ('month', 'This month'), ('year', 'This year')]:
+            self._scoreboard(e.target, period, now, title)
+        self.send_stats_link(e.target)
 
     def send_top_scores(self, e, period):
-        c = self.connection
-        now = datetime.datetime.now()
-        date = now.date()
-        
-        # Determine the key based on period
-        if period == 'today':
-            key = f'{date.year}-{date.month}-{date.day}'
-            scores_dict = self.scores.get('daily', {}).get(key, {})
-            title = "Today's"
-            contestants_key = key + '_contestants'
-            contestants = self.scores.get('daily', {}).get(contestants_key, [])
-        elif period == 'week':
-            week = date.isocalendar()[1]
-            key = f'{date.year}-W{week}'
-            scores_dict = self.scores.get('weekly', {}).get(key, {})
-            title = "This week's"
-        elif period == 'month':
-            key = f'{date.year}-{date.month}'
-            scores_dict = self.scores.get('monthly', {}).get(key, {})
-            title = "This month's"
-        else:  # year
-            key = f'{date.year}'
-            scores_dict = self.scores.get('yearly', {}).get(key, {})
-            title = "This year's"
+        self._scoreboard(e.target, period, self.now().date(), f'Top {period}')
+        self.send_stats_link(e.target)
 
-        if not scores_dict:
-            c.privmsg(e.target, f"No participants {period}.")
-            return
+    def send_statistics(self, e):
+        rows = sorted(self.store.leaderboard('all', self.now().date()), key=lambda r: (-r['attempts'], -r['score']))
+        self.say(e.target, 'Lifetime statistics (top 10 by attendance):')
+        for row in rows[:10]:
+            avg = f"{row['average_score']:.2f}" if row['average_score'] is not None else 'unknown'
+            self.say(e.target, f"{row['nick']}: {row['attempts']} attempts, {row['days']} days, "
+                     f"best {row['score']:.2f}, average {avg}")
+        self.send_stats_link(e.target)
 
-        # Get participation counts
-        participation_counts = {}
-        if period == 'today':
-            # For today, we can use the contestants list directly
-            for entry in contestants:
-                participation_counts[entry['nick']] = participation_counts.get(entry['nick'], 0) + 1
-        else:
-            # For other periods, we need to count across all relevant daily entries
-            for daily_key, daily_data in self.scores['daily'].items():
-                if not daily_key.endswith('_contestants'):
-                    continue
-                date_str = daily_key[:-12]  # Remove '_contestants'
-                year, month, day = map(int, date_str.split('-'))
-                entry_date = datetime.date(year, month, day)
-                
-                # Check if the entry belongs to the current period
-                if period == 'week' and entry_date.isocalendar()[1] == date.isocalendar()[1]:
-                    contestants = daily_data
-                elif period == 'month' and entry_date.month == date.month:
-                    contestants = daily_data
-                elif period == 'year' and entry_date.year == date.year:
-                    contestants = daily_data
-                else:
-                    continue
-                    
-                for entry in contestants:
-                    participation_counts[entry['nick']] = participation_counts.get(entry['nick'], 0) + 1
+    def make_announcements(self, now=None):
+        now = now or self.now()
+        self._scoreboard(self.channel, 'day', now.date(), "Today's scoreboard")
+        if now.weekday() == 6:
+            self._scoreboard(self.channel, 'week', now.date(), 'Weekly scoreboard')
+        if now.day == 1:
+            self._scoreboard(self.channel, 'month', now.date() - timedelta(days=1), 'Last month')
+        if now.month == 1 and now.day == 1:
+            self._scoreboard(self.channel, 'year', now.date() - timedelta(days=1), 'Last year')
+        self.send_stats_link(self.channel)
 
-        # Sort by score and get top 5
-        def get_score(item):
-            nick, score_data = item
-            return score_data['score'] if isinstance(score_data, dict) else score_data
+    def tick(self):
+        try:
+            if not self.connection.is_connected() or not self.joined:
+                return
+            now = self.now()
+            if now.hour == 13 and now.minute == 36 and self.store.claim_announcement(now.date(), 'pregame'):
+                self.say(self.channel, f'The game is about to begin! Target 13:37:37 ({self.timezone}).')
+            if (now.hour == 13 and (now.minute > 38 or (now.minute == 38 and now.second >= 30))
+                    and self.store.claim_announcement(now.date(), 'results')):
+                self.make_announcements(now)
+            if self.outbox:
+                target, message = self.outbox.popleft()
+                self.connection.privmsg(target, message)
+        except Exception:
+            logger.exception('IRC tick failed; retrying on next tick')
 
-        top_scores = sorted(scores_dict.items(), key=lambda x: get_score(x), reverse=True)[:5]
-        
-        # Format and send the message
-        c.privmsg(e.target, f"{title} Top 5:")
-        for i, (nick, score_data) in enumerate(top_scores, 1):
-            score = get_score(('', score_data))
-            participations = participation_counts.get(nick, 0)
-            timestamp = score_data.get('timestamp', '') if isinstance(score_data, dict) else ''
-            time_str = f" at {timestamp}" if timestamp else ""
-            c.privmsg(e.target, 
-                f"{i}. {nick} - Score: {score:.2f}{time_str}, Participations: {participations}")
 
 def main():
-    """Main function with error handling and retry logic"""
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    logger = logging.getLogger(__name__)
-    
-    while True:
-        try:
-            # Use environment variables configured at the top of the file
-            logger.info(f"Starting LeetBot - connecting to {IRC_SERVER}:{IRC_PORT} channel {IRC_CHANNEL}")
-            bot = LeetBot(IRC_CHANNEL, IRC_NICKNAME, IRC_SERVER, IRC_PORT)
-            bot.start()
-        except KeyboardInterrupt:
-            logger.info("Bot shutdown requested by user")
-            break
-        except UnicodeDecodeError as e:
-            logger.error(f"Unicode decode error: {e}")
-            logger.info("Restarting bot in 10 seconds...")
-            time.sleep(10)
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            logger.info("Restarting bot in 30 seconds...")
-            time.sleep(30)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    timezone = os.getenv('GAME_TIMEZONE', os.getenv('TZ', 'Europe/Stockholm'))
+    ZoneInfo(timezone)
+    password = os.environ.get('STATS_PASSWORD', '')
+    if not password:
+        raise ValueError('STATS_PASSWORD must be set')
+    if any(ord(c) < 32 for c in password):
+        raise ValueError('STATS_PASSWORD cannot contain control characters')
+    store = ScoreStore(os.getenv('DATABASE_PATH', 'data/leetbot.sqlite3'), timezone)
+    result = store.migrate_json(os.getenv('LEGACY_SCORES_PATH', 'scores.json'))
+    if result:
+        logger.info('Legacy import complete: %s', result)
+    app = create_app(store, password=password)
+    server = create_server(app, host=os.getenv('WEB_HOST', '0.0.0.0'), port=int(os.getenv('WEB_PORT', '8080')))
+    worker = threading.Thread(target=server.run, name='stats-web', daemon=True)
+    worker.start()
+    bot = LeetBot(os.getenv('IRC_CHANNEL', '#mbhooden'), os.getenv('IRC_NICKNAME', 'LeetBot1337'),
+                  os.getenv('IRC_SERVER', 'portlane.se.quakenet.org'), int(os.getenv('IRC_PORT', '6667')), store=store)
+    stopping = threading.Event()
 
-if __name__ == "__main__":
+    def stop(*_):
+        stopping.set()
+        bot.joined = False
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        bot._connect()
+        while not stopping.is_set():
+            if not worker.is_alive():
+                raise RuntimeError('Stats server stopped unexpectedly')
+            bot.reactor.process_once(timeout=0.2)
+    finally:
+        if bot.connection.is_connected():
+            bot.connection.disconnect('LeetBot shutting down')
+        server.close()
+
+
+if __name__ == '__main__':
     main()
-

@@ -4,11 +4,29 @@ services:
     container_name: leetbot
     restart: unless-stopped
     environment:
-      - TZ=Europe/Stockholm
-      - IRC_SERVER=irc.server.address
-      - IRC_PORT=6667
-      - IRC_CHANNEL=#yourchannel
-      - IRC_NICKNAME=YourBotName
+      TZ: ${GAME_TIMEZONE:-Europe/Stockholm}
+      GAME_TIMEZONE: ${GAME_TIMEZONE:-Europe/Stockholm}
+      IRC_SERVER: ${IRC_SERVER:-irc.server.address}
+      IRC_PORT: ${IRC_PORT:-6667}
+      IRC_CHANNEL: ${IRC_CHANNEL:-#yourchannel}
+      IRC_NICKNAME: ${IRC_NICKNAME:-LeetBot1337}
+      DATABASE_PATH: /data/leetbot.sqlite3
+      LEGACY_SCORES_PATH: /legacy/scores.json
+      STATS_URL: ${STATS_URL:-http://localhost:8080}
+      STATS_PASSWORD: ${STATS_PASSWORD:?Set STATS_PASSWORD in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:8080"
     volumes:
-      - "/etc/localtime:/etc/localtime:ro"
-      - "./scores.json:/scores.json"  # Using relative path for better portability
+      - leetbot-data:/data
+      # Existing history, imported once and kept read-only. Remove this bind for a fresh install.
+      - type: bind
+        source: ./scores.json
+        target: /legacy/scores.json
+        read_only: true
+        bind:
+          create_host_path: false
+    stop_grace_period: 15s
+
+volumes:
+  leetbot-data:

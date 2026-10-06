@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>Sign in · LeetBot</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <a class="brand" href="/"><span class="brand-mark">13</span> leetbot<span class="brand-slash">/</span>stats</a>
+    <p class="eyebrow">THE DAILY PURSUIT OF PERFECT TIMING</p>
+    <h1>One minute.<br><span class="gradient">Infinite bragging rights.</span></h1>
+    <p class="muted">Your channel’s scores, rivalries, and remarkably precise nerd stats. Enter the shared password to explore.</p>
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="csrf" value="{{ session.csrf }}">
+      <label for="password">Channel password</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password" autofocus>
+      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+      <button class="primary login-button" type="submit">Enter the scoreboard <span aria-hidden="true">→</span></button>
+    </form>
+    <p class="login-note">Need the password? Ask <code>!help</code> in your IRC channel.</p>
+    <div class="login-target"><span>TARGET TIME</span><strong>13:37:37<span>.000000</span></strong></div>
+  </main>
+</body>
+</html>

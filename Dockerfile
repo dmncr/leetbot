@@ -1,17 +1,18 @@
-FROM python:3.8-slim
-
-# Install required Python packages
-RUN pip install irc
-
-# Copy the bot script into the container
-COPY leetbot.py /leetbot.py
-
-# Set the working directory
-WORKDIR /
-
-# Expose the default IRC port
-EXPOSE 6667
-
-# Run the bot using environment variables
-CMD ["python", "/leetbot.py"]
+FROM python:3.13-slim
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    DATABASE_PATH=/data/leetbot.sqlite3 LEGACY_SCORES_PATH=/legacy/scores.json
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && groupadd --gid 10001 leetbot \
+    && useradd --uid 10001 --gid leetbot --no-create-home leetbot \
+    && mkdir -p /data /legacy && chown leetbot:leetbot /data
+COPY leetbot.py game.py storage.py analytics.py webapp.py ./
+COPY templates ./templates
+COPY static ./static
+USER leetbot
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+CMD ["python", "leetbot.py"]
 
