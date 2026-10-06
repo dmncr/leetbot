@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -138,3 +139,28 @@ def test_ties_and_accuracy_sample_threshold(store):
     assert [r['nick'] for r in stats['accuracy']] == ['a','b']
     assert set(stats['daily_winners'][-1]['nicks']) == {'a','b','c'}
     assert all(r['wins'] == 5 for r in stats['leaderboard'] if r['nick'] != 'c')
+
+
+@pytest.mark.parametrize('code',[sqlite3.SQLITE_READONLY,sqlite3.SQLITE_CANTOPEN,sqlite3.SQLITE_READONLY | (1 << 8)])
+def test_storage_permission_errors_are_actionable(tmp_path,monkeypatch,code):
+    path = tmp_path / 'scores.sqlite3'
+    def fail(*args,**kwargs):
+        error = sqlite3.OperationalError('database unavailable')
+        error.sqlite_errorcode = code
+        raise error
+    monkeypatch.setattr(sqlite3,'connect',fail)
+    with pytest.raises(PermissionError,match='Both the database file and its directory') as result:
+        ScoreStore(path)
+    assert str(path.resolve()) in str(result.value)
+    assert '-wal and -shm' in str(result.value)
+    assert isinstance(result.value.__cause__,sqlite3.OperationalError)
+
+
+def test_unrelated_database_errors_are_not_misreported(tmp_path,monkeypatch):
+    def fail(*args,**kwargs):
+        error = sqlite3.OperationalError('database is locked')
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        raise error
+    monkeypatch.setattr(sqlite3,'connect',fail)
+    with pytest.raises(sqlite3.OperationalError,match='database is locked'):
+        ScoreStore(tmp_path / 'scores.sqlite3')

@@ -16,7 +16,8 @@ The original bot kept four mutable score dictionaries and contestant logs in one
 | Being kicked left the bot outside the competition channel. | Automatic rejoin after five seconds; output waits until the bot has joined. |
 | Restart could repeat daily announcements. | Persistent date/kind claims suppress duplicate scheduling across process restarts. |
 | No web access controls or production HTTP server existed. | Waitress, shared-password authentication, constant-time credential comparison, signed 12-hour cookies, CSRF tokens, login throttling, security headers, and password-change session invalidation. |
-| Python 3.8 image, unpinned direct packages, root execution, and exposed outbound IRC port. | Python 3.13, pinned direct requirements, non-root execution, persistent named volume, HTTP health check, and only the stats port published. |
+| Python 3.8 image, unpinned direct packages, root execution, and exposed outbound IRC port. | Python 3.13, pinned direct requirements, UID/GID 1000:1000 execution, persistent named volume, HTTP health check, and only the stats port published. |
+| A database created by a different user, or an unwritable database directory, caused an opaque startup exception. | Permission failures now identify the database, directory, runtime identity, and WAL requirements. The README includes a repair command for existing mounts. |
 
 ## Data integrity and migration
 

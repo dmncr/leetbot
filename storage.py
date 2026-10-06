@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
 
@@ -44,7 +45,28 @@ class ScoreStore:
     def __init__(self, path='data/leetbot.sqlite3', timezone='Europe/Stockholm'):
         self.path = str(path)
         self.timezone = timezone
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            self._initialize()
+        except PermissionError as exc:
+            raise PermissionError(self._permission_message()) from exc
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, 'sqlite_errorcode', 0) & 0xff
+            if code in (sqlite3.SQLITE_READONLY, sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_PERM):
+                raise PermissionError(self._permission_message()) from exc
+            raise
+
+    def _permission_message(self):
+        path = Path(self.path).resolve()
+        identity = f'UID {os.getuid()}, GID {os.getgid()}' if hasattr(os, 'getuid') else 'the current user'
+        return (f'Cannot open or write SQLite database {path} as {identity}. '
+                f'Both the database file and its directory ({path.parent}) must be writable; '
+                'SQLite creates -wal and -shm files beside the database. '
+                'Mount the database directory read-write and fix its ownership/permissions '
+                '(the Docker image uses UID/GID 1000:1000). Creating an empty file with touch '
+                'does not fix this. See README.md: Database permissions.')
+
+    def _initialize(self):
         with self.connect() as db:
             db.execute('PRAGMA journal_mode=WAL')
             version = db.execute('PRAGMA user_version').fetchone()[0]
@@ -52,9 +74,9 @@ class ScoreStore:
                 raise RuntimeError(f'Unsupported database schema version: {version}')
             db.executescript(SCHEMA)
             db.execute('PRAGMA user_version=1')
-            db.execute("INSERT OR IGNORE INTO metadata VALUES ('game_timezone', ?)", (timezone,))
+            db.execute("INSERT OR IGNORE INTO metadata VALUES ('game_timezone', ?)", (self.timezone,))
             stored = db.execute("SELECT value FROM metadata WHERE key='game_timezone'").fetchone()[0]
-            if stored != timezone:
+            if stored != self.timezone:
                 raise ValueError(f'Database uses {stored}; changing GAME_TIMEZONE would reinterpret history')
 
     @contextmanager

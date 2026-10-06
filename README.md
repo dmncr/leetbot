@@ -93,6 +93,22 @@ docker compose cp leetbot:/data/leetbot.sqlite3.backup ./leetbot.sqlite3.backup
 
 Restore with the container stopped. Retain the legacy JSON as a separate pre-migration backup. Avoid copying only the live `.sqlite3` file while WAL writes are active.
 
+## Database permissions
+
+The container runs as UID/GID `1000:1000`. SQLite needs write access to the database **and its containing directory**, because it creates `leetbot.sqlite3-wal` and `leetbot.sqlite3-shm` alongside the database. You do not need to create the database manually; `touch` can leave a file owned by the wrong user.
+
+The supplied Compose configuration uses a named volume mounted read-write at `/data`; a fresh named volume inherits the image's directory ownership. An existing volume or a host bind mount may have different ownership, including `10001:10001` from the earlier image. Mount the whole directory (for example `./data:/data`), rather than mounting just the SQLite file. Only the legacy JSON should be mounted read-only.
+
+For the default database path `/data/leetbot.sqlite3`, repair an existing writable mount without deleting the database:
+
+```sh
+docker compose stop leetbot
+docker compose run --rm --no-deps --user 0 --entrypoint sh leetbot -c 'set -eu; chown 1000:1000 /data; chmod u+rwx /data; for f in /data/leetbot.sqlite3 /data/leetbot.sqlite3-wal /data/leetbot.sqlite3-shm; do if [ -f "$f" ]; then chown 1000:1000 "$f"; chmod u+rw "$f"; fi; done'
+docker compose up -d leetbot
+```
+
+Use your actual database path/directory if you changed `DATABASE_PATH`. This command changes ownership of a host bind mount's directory/files too. If it reports a read-only filesystem, remove `:ro`/`read_only: true` from the database mount first. Do not delete the database or its volume to fix permissions.
+
 ## Development and verification
 
 Requires Python 3.13. Create a virtual environment and install `requirements-dev.txt`, then run:
