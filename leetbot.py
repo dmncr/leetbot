@@ -39,11 +39,13 @@ def connect_socket(address):
 
 class LeetBot(irc.bot.SingleServerIRCBot):
     def __init__(self, channel, nickname, server, port=6667, *, store=None,
-                 timezone=None, stats_url=None, stats_password=None):
+                 timezone=None, stats_url=None, stats_password=None, private_replies=None):
         super().__init__([(server, port)], nickname, nickname, recon=irc.bot.ExponentialBackoff(),
                          connect_factory=connect_socket)
         self.connection.buffer_class = SafeBuffer
         self.channel = channel
+        self.private_replies = (os.getenv('PRIVATE_REPLIES', 'false').strip().lower() in ('true', '1', 'yes', 'on')
+                                if private_replies is None else private_replies)
         self.timezone = ZoneInfo(timezone or os.getenv('GAME_TIMEZONE', os.getenv('TZ', 'Europe/Stockholm')))
         self.store = store or ScoreStore(os.getenv('DATABASE_PATH', 'data/leetbot.sqlite3'), str(self.timezone))
         self.stats_url = stats_url if stats_url is not None else os.getenv('STATS_URL', 'http://localhost:8080')
@@ -68,6 +70,9 @@ class LeetBot(irc.bot.SingleServerIRCBot):
 
     def update_scores(self, nick, score, timestamp):
         self.store.add_attempt(nick, score, timestamp)
+
+    def reply_target(self, e):
+        return e.source.nick if self.private_replies else self.channel
 
     def say(self, target, message, *, priority=False):
         # Leave room for server prefix; split by UTF-8 bytes without splitting characters.
@@ -141,7 +146,7 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         try:
             if not e.source or not e.arguments or nick_key(e.source.nick) == nick_key(c.get_nickname()):
                 return
-            # Commands sent in a query also answer in the competition channel.
+            # Reply routing follows configuration, except !time stays public.
             # Private 1337 messages never count as competition attempts.
             self.handle_command(e, now, e.arguments[0].strip())
         except Exception:
@@ -164,6 +169,13 @@ class LeetBot(irc.bot.SingleServerIRCBot):
             return False
         kind = COMMANDS[parts[0].lower()]
         if kind == 'clock' and len(parts) > 1:
+            if parts[1].lower() == 'request':
+                if len(parts) == 3 and re.fullmatch(r'[0-9a-f]{12}', parts[2]):
+                    if len(self.outbox) <= 50 and self.command_allowed(e.source.nick, 'clock'):
+                        self.start_clock_test(e, request=parts[2])
+                    elif len(self.outbox) <= 50 and self.command_allowed(e.source.nick, 'clock-request-error'):
+                        self.say(self.reply_target(e), f'!leetclock {parts[2]} error Wait five seconds between tests.', priority=True)
+                return True
             # A valid one-use callback bypasses the request cooldown so pasting
             # immediately works. Receipt time was captured before this handler.
             self.finish_clock_test(e, now, parts)
@@ -192,7 +204,7 @@ class LeetBot(irc.bot.SingleServerIRCBot):
             if pending.expires <= now:
                 del self.clock_tests[token]
 
-    def start_clock_test(self, e):
+    def start_clock_test(self, e, *, request=None):
         self.expire_clock_tests()
         owner = nick_key(e.source.nick)
         # Keep one outstanding test per nickname and bound total memory.
@@ -203,10 +215,14 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         self.clock_tests[token] = ClockTest(owner, e.source.nick, time.monotonic() + CLOCK_TEST_TTL)
         while len(self.clock_tests) > 256:
             self.clock_tests.popitem(last=False)
-        self.say(self.channel, f'{e.source.nick}: Millisecond clock/latency test: '
+        if request is not None:
+            self.say(self.reply_target(e), f'!leetclock {request} issued {e.source.nick} {token}', priority=True)
+            return
+        self.say(self.reply_target(e), f'{e.source.nick}: Millisecond clock/latency test: '
                  f'{self.stats_url.rstrip("/")}/timetest/{token} '
                  '(same site login). Copy the mIRC snippet there, then run '
-                 f'/leetclock_{token} in {self.channel}. One-use ID; expires in 5 minutes.')
+                 f'/leetclock_{token} in {self.channel}. One-use ID; expires in 5 minutes. '
+                 f'Install-once option: {self.stats_url.rstrip("/")}/timetest')
 
     def finish_clock_test(self, e, received, parts):
         self.expire_clock_tests()
@@ -224,13 +240,13 @@ class LeetBot(irc.bot.SingleServerIRCBot):
             error = 'This test is not awaiting that step. Request !timetest again if it timed out.'
         if error:
             if len(self.outbox) <= 50 and self.command_allowed(e.source.nick, 'clock-error'):
-                self.say(self.channel, f'{e.source.nick}: {error}')
+                self.say(self.reply_target(e), f'{e.source.nick}: {error}')
             return
         if parts[2].lower() == 'start':
             pending.client_send_us = int(parts[3]) * 1000
             pending.server_receive_us = epoch_us(received)
             pending.phase = 'queued'
-            self.outbox.appendleft((self.channel, ClockProbe(token)))
+            self.outbox.appendleft((self.reply_target(e), ClockProbe(token)))
             return
         del self.clock_tests[token]
         t1, t2, t3, t4 = (pending.client_send_us, pending.server_receive_us,
@@ -241,23 +257,24 @@ class LeetBot(irc.bot.SingleServerIRCBot):
         # Whole millisecond client samples can under-report a sub-millisecond
         # loopback RTT by less than 1 ms. Larger negatives indicate a clock step.
         if rtt_us < -1000 or t3 < t2 or t4 < t1:
-            self.say(self.channel, f'{e.source.nick}: Clock changed during the test or timestamps are inconsistent. '
+            self.say(self.reply_target(e), f'{e.source.nick}: Clock changed during the test or timestamps are inconsistent. '
                      'Request !timetest again.', priority=True)
             return
         rtt_us = max(0, rtt_us)
         offset_ms = ((t1 - t2) + (t4 - t3)) / 2000
-        self.say(self.channel, f'{e.source.nick}: {(t1 - t2) / 1000:+.3f} ms total timing difference '
+        self.say(self.reply_target(e), f'{e.source.nick}: {(t1 - t2) / 1000:+.3f} ms total timing difference '
                  '(client - bot at receipt). Estimated Windows clock offset: '
                  f'{offset_ms:+.3f} ms (+ ahead / - behind). IRC RTT: '
                  f'{rtt_us / 1000:.3f} ms; one-way transit ~{rtt_us / 2000:.3f} ms. '
                  'Symmetric-path estimate; includes client handling.', priority=True)
 
     def send_help(self, e):
-        self.say(self.channel, 'Commands: !help, !time / !leetbottime, !timetest, !topscore / !highscores, '
+        target = self.reply_target(e)
+        self.say(target, 'Commands: !help, !time / !leetbottime, !timetest, !topscore / !highscores, '
                  '!toptoday, !topweek, !topmonth, !topyear, !statistics.')
-        self.say(self.channel, f'Type 1337 or leet during 13:37:00 <= time < 13:38:00 ({self.timezone}). '
+        self.say(target, f'Type 1337 or leet during 13:37:00 <= time < 13:38:00 ({self.timezone}). '
                  'Target: 13:37:37.000000. Best attempt per period wins; retries are allowed.')
-        self.send_stats_link(self.channel)
+        self.send_stats_link(target)
 
     def send_time(self, e, timestamp):
         self.say(self.channel, f'Server receipt time: {timestamp:%H:%M:%S.%f} ({self.timezone})', priority=True)
@@ -274,23 +291,26 @@ class LeetBot(irc.bot.SingleServerIRCBot):
                          f"{row['attempts']} attempts / {row['days']} days")
 
     def send_highscores(self, e):
+        target = self.reply_target(e)
         now = self.now().date()
         for period, title in [('day', 'Today'), ('week', 'This week'), ('month', 'This month'), ('year', 'This year')]:
-            self._scoreboard(self.channel, period, now, title)
-        self.send_stats_link(self.channel)
+            self._scoreboard(target, period, now, title)
+        self.send_stats_link(target)
 
     def send_top_scores(self, e, period):
-        self._scoreboard(self.channel, period, self.now().date(), f'Top {period}')
-        self.send_stats_link(self.channel)
+        target = self.reply_target(e)
+        self._scoreboard(target, period, self.now().date(), f'Top {period}')
+        self.send_stats_link(target)
 
     def send_statistics(self, e):
+        target = self.reply_target(e)
         rows = sorted(self.store.leaderboard('all', self.now().date()), key=lambda r: (-r['attempts'], -r['score']))
-        self.say(self.channel, 'Lifetime statistics (top 10 by attendance):')
+        self.say(target, 'Lifetime statistics (top 10 by attendance):')
         for row in rows[:10]:
             avg = f"{row['average_score']:.2f}" if row['average_score'] is not None else 'unknown'
-            self.say(self.channel, f"{row['nick']}: {row['attempts']} attempts, {row['days']} days, "
+            self.say(target, f"{row['nick']}: {row['attempts']} attempts, {row['days']} days, "
                      f"best {row['score']:.2f}, average {avg}")
-        self.send_stats_link(self.channel)
+        self.send_stats_link(target)
 
     def make_announcements(self, now=None):
         now = now or self.now()

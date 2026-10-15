@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 
 from analytics import dashboard
-from clocktest import mirc_script
+from clocktest import mirc_script, reusable_mirc_script
 
 
 def create_app(store, *, password=None, secret_key=None, clock_bot=None):
@@ -40,7 +40,7 @@ def create_app(store, *, password=None, secret_key=None, clock_bot=None):
             if not session.get('authenticated'):
                 if request.path.startswith('/api/'):
                     return jsonify(error='Authentication required'), 401
-                if request.endpoint in ('timetest', 'timetest_script'):
+                if request.endpoint in ('timetest', 'timetest_script', 'clock_install', 'clock_install_script'):
                     session['login_return'] = url_for(request.endpoint, **request.view_args)
                 return redirect(url_for('login'))
             return fn(*args, **kwargs)
@@ -107,19 +107,39 @@ def create_app(store, *, password=None, secret_key=None, clock_bot=None):
     def history():
         return render_template('dashboard.html', history=True)
 
+    def reusable_clock_script():
+        if clock_bot is None:
+            abort(404, 'Clock tests are not configured.')
+        return reusable_mirc_script(clock_bot.channel, clock_bot.connection.get_nickname(),
+                                    private_replies=clock_bot.private_replies)
+
+    @app.get('/timetest')
+    @protected
+    def clock_install():
+        script = reusable_clock_script()
+        return render_template('timetest.html', reusable=True, channel=clock_bot.channel, script=script,
+                               private_replies=clock_bot.private_replies)
+
+    @app.get('/timetest/script.mrc')
+    @protected
+    def clock_install_script():
+        return Response(reusable_clock_script(), mimetype='text/plain', headers={
+            'Content-Disposition': 'attachment; filename="leetbot-clock.mrc"'})
+
     def clock_script(token):
         pending = clock_bot.clock_tests.get(token) if clock_bot else None
         if (not pending or pending.expires <= time.monotonic() or pending.phase != 'issued'
                 or len(token) != 12 or any(char not in '0123456789abcdef' for char in token)):
             abort(404, 'Clock test expired or already started. Request !timetest again in IRC.')
-        return pending, mirc_script(token, clock_bot.channel, clock_bot.connection.get_nickname())
+        return pending, mirc_script(token, clock_bot.channel, clock_bot.connection.get_nickname(),
+                                    private_replies=clock_bot.private_replies)
 
     @app.get('/timetest/<token>')
     @protected
     def timetest(token):
         pending, script = clock_script(token)
         return render_template('timetest.html', token=token, nick=pending.nick,
-                               channel=clock_bot.channel, script=script)
+                               channel=clock_bot.channel, script=script, private_replies=clock_bot.private_replies)
 
     @app.get('/timetest/<token>/script.mrc')
     @protected

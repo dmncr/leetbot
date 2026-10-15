@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import base64
 
 CLOCK_TEST_TTL = 300
+CLOCK_READER_PROGRAM = ('for (;;) { [void][Console]::ReadLine(); '
+                        '[Console]::WriteLine([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()); }')
 
 
 @dataclass
@@ -27,7 +29,7 @@ def epoch_us(stamp):
     return (elapsed.days * 86400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
 
 
-def mirc_script(token, channel, bot_nick):
+def mirc_script(token, channel, bot_nick, *, private_replies=False):
     """Warm PowerShell before measuring; retain it for the automatic reply.
 
     Millisecond timestamps are sampled through local pipes. These add some
@@ -36,9 +38,10 @@ def mirc_script(token, channel, bot_nick):
     complete readable program is included in the generated script's comments.
     """
     name = f'lt{token}'
-    program = ('for (;;) { [void][Console]::ReadLine(); '
-               '[Console]::WriteLine([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()); }')
+    program = CLOCK_READER_PROGRAM
     encoded = base64.b64encode(program.encode('utf-16-le')).decode('ascii')
+    destination = bot_nick if private_replies else channel
+    listener = '?' if private_replies else channel
     return f'''; LeetBot clock test {token}, issued to one nickname for five minutes.
 ; No downloads or clock changes. Uses Windows PowerShell and mIRC COM.
 ; PowerShell waits for a pipe request, then prints UTC Unix milliseconds:
@@ -64,15 +67,15 @@ alias leetclock_{token} {{
   noop $com({name}o,ReadLine,1)
   var %stamp = $com({name}o).result
   if (%stamp !isnum) {{ leetclock_cleanup_{token} | echo -a No millisecond clock sample received. | return }}
-  msg {channel} !timetest {token} start %stamp
+  msg {destination} !timetest {token} start %stamp
 }}
-on *:TEXT:!leetclock {token} *:{channel}:{{
+on *:TEXT:!leetclock {token} *:{listener}:{{
   if ($nick != {bot_nick}) return
   if (!$com({name}o)) return
   noop $com({name}i,WriteLine,1,bstr,sample)
   noop $com({name}o,ReadLine,1)
   var %stamp = $com({name}o).result
-  if (%stamp isnum) msg {channel} !timetest {token} result %stamp
+  if (%stamp isnum) msg {destination} !timetest {token} result %stamp
   leetclock_cleanup_{token}
 }}
 alias leetclock_timeout_{token} {{
@@ -87,4 +90,98 @@ alias leetclock_cleanup_{token} {{
   if ($com({name}p)) comclose {name}p
   if ($com({name}s)) comclose {name}s
 }}
+'''
+
+
+def reusable_mirc_script(channel, bot_nick, *, private_replies=False):
+    """Shared install: negotiate a new nickname-bound ID on every /leetclock.
+
+    Correlate the offer with the current connection, nickname and request nonce.
+    Only the configured bot can trigger sampling; never evaluate received text.
+    """
+    encoded = base64.b64encode(CLOCK_READER_PROGRAM.encode('utf-16-le')).decode('ascii')
+    destination = bot_nick if private_replies else channel
+    listener = '?' if private_replies else channel
+    result_location = f'a private chat with {bot_nick}' if private_replies else channel
+    return f'''; LeetBot reusable clock test v1. Install once in a separate Remote file.
+; Run /leetclock in {channel}; /leetclock cancel releases the clock reader.
+; Shared by all players: each run negotiates a fresh nickname-bound test ID.
+; Windows PowerShell reads milliseconds; no downloads or clock changes.
+; Readable PowerShell program (encoded below to protect mIRC punctuation):
+; {CLOCK_READER_PROGRAM}
+alias leetclock {{
+  if ($1 == cancel) {{ leetclock_cleanup | echo -a LeetBot clock test cancelled. | return }}
+  if ($status != connected) {{ echo -a Connect to IRC first. | return }}
+  if ($chan != {channel}) {{ echo -a Run /leetclock in {channel}. | return }}
+  if (!$nick($chan,{bot_nick})) {{ echo -a {bot_nick} is not in this channel. | return }}
+  if (%leetclock.phase) {{ echo -a A test is running. Wait or use /leetclock cancel. | return }}
+  leetclock_cleanup
+  set %leetclock.cid $cid
+  set %leetclock.request $+($rand(100000,999999),$rand(100000,999999))
+  set %leetclock.phase request
+  .timerleetclock 1 120 leetclock_timeout
+  msg {destination} !timetest request %leetclock.request
+  echo -a LeetBot: requesting a fresh clock test. Results will appear in {result_location}.
+}}
+on *:TEXT:!leetclock *:{listener}:{{
+  if ($nick != {bot_nick}) return
+  if ($cid != %leetclock.cid) return
+  if ((%leetclock.phase == request) && ($2 == %leetclock.request)) {{
+    if ($3 == error) {{ leetclock_cleanup | echo -a LeetBot: $4- | return }}
+    if (($3 != issued) || ($4 != $me) || (!$regex($5,/^[a-f0-9]{{12}}$/))) return
+    set %leetclock.token $5
+    set %leetclock.phase starting
+    if (!$leetclock_open) {{ leetclock_cleanup | echo -a Cannot read the Windows clock. Check COM permissions and Windows PowerShell. | return }}
+    var %stamp = $leetclock_sample
+    if (%stamp !isnum) {{ leetclock_cleanup | echo -a No millisecond clock sample received. | return }}
+    set %leetclock.phase ready
+    msg {destination} !timetest %leetclock.token start %stamp
+    return
+  }}
+  if ((%leetclock.phase == ready) && ($2 == %leetclock.token) && ($3 == ready)) {{
+    var %stamp = $leetclock_sample
+    if (%stamp !isnum) {{ leetclock_cleanup | echo -a No millisecond clock sample received. | return }}
+    msg {destination} !timetest %leetclock.token result %stamp
+    leetclock_cleanup
+  }}
+}}
+alias -l leetclock_open {{
+  comopen leetclocks WScript.Shell
+  if ($comerr) return $false
+  noop $com(leetclocks,Exec,1,bstr,powershell -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand {encoded},dispatch* leetclockp)
+  if ($comerr) return $false
+  noop $com(leetclockp,StdIn,2,dispatch* leetclocki)
+  if ($comerr) return $false
+  noop $com(leetclockp,StdOut,2,dispatch* leetclocko)
+  if ($comerr) return $false
+  ; Warm PowerShell before sampling T1. Startup time is outside the measurement.
+  var %warm = $leetclock_sample
+  if (%warm isnum) return $true
+  return $false
+}}
+alias -l leetclock_sample {{
+  noop $com(leetclocki,WriteLine,1,bstr,sample)
+  if ($comerr) return
+  noop $com(leetclocko,ReadLine,1)
+  if ($comerr) return
+  return $com(leetclocko).result
+}}
+alias leetclock_timeout {{
+  leetclock_cleanup
+  echo -a LeetBot clock test timed out. Wait five seconds, then run /leetclock again.
+}}
+alias leetclock_cleanup {{
+  .timerleetclock off
+  if ($com(leetclockp)) noop $com(leetclockp,Terminate,1)
+  if ($com(leetclocko)) comclose leetclocko
+  if ($com(leetclocki)) comclose leetclocki
+  if ($com(leetclockp)) comclose leetclockp
+  if ($com(leetclocks)) comclose leetclocks
+  unset %leetclock.*
+}}
+on *:START:leetclock_cleanup
+on *:DISCONNECT:{{
+  if ($cid == %leetclock.cid) leetclock_cleanup
+}}
+on *:UNLOAD:leetclock_cleanup
 '''

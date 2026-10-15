@@ -11,6 +11,7 @@ services:
       IRC_PORT: ${IRC_PORT:-6667}
       IRC_CHANNEL: ${IRC_CHANNEL:-#yourchannel}
       IRC_NICKNAME: ${IRC_NICKNAME:-LeetBot1337}
+      PRIVATE_REPLIES: ${PRIVATE_REPLIES:-false}
       DATABASE_PATH: /data/leetbot.sqlite3
       LEGACY_SCORES_PATH: /legacy/scores.json
       STATS_URL: ${STATS_URL:-http://localhost:8080}

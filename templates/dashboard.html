@@ -23,11 +23,12 @@
       {% if not history %}<a href="#activity">Attendance <span>03</span></a><a href="#timing">Timing lab <span>04</span></a>{% endif %}
       <a class="{{ 'active' if history }}" href="{{ url_for('history') }}" data-page-link>Stats & history <span>05</span></a>
       <a href="{{ url_for('history') }}#champions" data-page-link>Hall of fame <span>06</span></a><a href="{{ url_for('history') }}#attempts" data-page-link>Attempt log <span>07</span></a>
+      <a href="{{ url_for('clock_install') }}">Clock test setup <span>08</span></a>
     </nav>
     <div class="sidebar-note"><span class="nav-label">HOW TO PLAY</span><p>Type <code>1337</code> in IRC.<br>Aim for <strong>13:37:37</strong>.<br>Get closer. Get glory.</p><span id="sidebar-zone" class="small muted"></span></div>
   </aside>
   <main id="main">
-    <nav class="page-tabs" aria-label="Pages"><a href="{{ url_for('index') }}" data-page-link {% if not history %}aria-current="page"{% endif %}>Overview</a><a href="{{ url_for('history') }}" data-page-link {% if history %}aria-current="page"{% endif %}>Stats & history</a></nav>
+    <nav class="page-tabs" aria-label="Pages"><a href="{{ url_for('index') }}" data-page-link {% if not history %}aria-current="page"{% endif %}>Overview</a><a href="{{ url_for('history') }}" data-page-link {% if history %}aria-current="page"{% endif %}>Stats & history</a><a href="{{ url_for('clock_install') }}">Clock test setup</a></nav>
     <section id="overview" class="hero">
       <div><p class="eyebrow">IRC / THE 1337 CHALLENGE</p><h1>{% if history %}The numbers. <span class="gradient">The history.</span>{% else %}mbhooden <span class="gradient">1337 showdown</span>{% endif %}</h1><p class="muted">{{ 'Precision rankings, calendar champions, and the latest recorded attempts.' if history else 'A daily ritual. A very small window. A very competitive channel.' }}</p></div>
       <div class="target-clock"><span class="eyebrow">THE MOMENT TO BEAT</span><strong>13:37:37<span>.000</span></strong><span class="small muted" id="timezone">Loading timezone…</span></div>

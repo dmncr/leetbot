@@ -86,12 +86,13 @@ def test_overview_and_history_are_protected_and_split(app):
     assert client.get('/api/stats').json['timing_window']['included'] == 1
 
 
-def test_clock_snippet_authentication_expiry_and_started_id(tmp_path):
+@pytest.mark.parametrize('private_replies', [False, True])
+def test_clock_snippet_authentication_expiry_and_started_id(tmp_path, private_replies):
     from types import SimpleNamespace
     from leetbot import LeetBot
 
     store = ScoreStore(tmp_path / 'clock.sqlite3')
-    bot = LeetBot('#game', 'bot', 'localhost', store=store)
+    bot = LeetBot('#game', 'bot', 'localhost', store=store, private_replies=private_replies)
     bot.connection.real_nickname = 'bot'  # Simulate the registered bot without connecting.
     bot.start_clock_test(SimpleNamespace(source=SimpleNamespace(nick='player')))
     token = next(iter(bot.clock_tests))
@@ -104,8 +105,14 @@ def test_clock_snippet_authentication_expiry_and_started_id(tmp_path):
     script = client.get(f'/timetest/{token}/script.mrc')
     assert script.status_code == 200 and script.mimetype == 'text/plain'
     assert f'leetbot-clock-{token}.mrc' in script.headers['Content-Disposition']
-    assert f'msg #game !timetest {token} start' in script.text
-    assert f'on *:TEXT:!leetclock {token} *:#game:' in script.text
+    destination, listener = ('bot', '?') if private_replies else ('#game', '#game')
+    assert f'msg {destination} !timetest {token} start' in script.text
+    assert f'msg {destination} !timetest {token} result' in script.text
+    assert f'on *:TEXT:!leetclock {token} *:{listener}:' in script.text
+    assert f'Command replies are currently {"private" if private_replies else "public"}' in page.text
+    if private_replies:
+        assert 'msg #game !timetest' not in script.text
+        assert 'a private chat with LeetBot' in page.text
     assert 'ToUnixTimeMilliseconds' in script.text
     assert 'timer' in script.text and 'Terminate' in script.text
     assert client.get('/timetest/unknown').status_code == 404
@@ -114,6 +121,73 @@ def test_clock_snippet_authentication_expiry_and_started_id(tmp_path):
     bot.clock_tests[token].phase = 'issued'
     bot.clock_tests[token].expires = 0
     assert client.get(f'/timetest/{token}/script.mrc').status_code == 404
+
+
+@pytest.mark.parametrize('private_replies', [False, True])
+def test_reusable_clock_install_download_and_login_return(tmp_path, private_replies):
+    from html.parser import HTMLParser
+    from leetbot import LeetBot
+    from clocktest import reusable_mirc_script
+
+    store = ScoreStore(tmp_path / 'install.sqlite3')
+    bot = LeetBot('#game', 'bot', 'localhost', store=store, private_replies=private_replies)
+    bot.connection.real_nickname = 'bot'
+    app = create_app(store, password='test-password', clock_bot=bot)
+    client = app.test_client()
+    assert client.get('/timetest').status_code == 302
+    assert login(client).headers['Location'] == '/timetest'
+    page = client.get('/timetest')
+    assert page.status_code == 200
+    assert 'Tools → Script Editor' in page.text and 'Remote' in page.text
+    assert '/leetclock cancel' in page.text and 'File → Save As' in page.text
+    assert '/timetest/script.mrc' in page.text
+    download = client.get('/timetest/script.mrc')
+    assert download.status_code == 200 and download.mimetype == 'text/plain'
+    assert 'leetbot-clock.mrc' in download.headers['Content-Disposition']
+    assert download.text == reusable_mirc_script('#game', 'bot', private_replies=private_replies)
+    destination, listener = ('bot', '?') if private_replies else ('#game', '#game')
+    assert f'msg {destination} !timetest request %leetclock.request' in download.text
+    assert f'msg {destination} !timetest %leetclock.token start %stamp' in download.text
+    assert f'msg {destination} !timetest %leetclock.token result %stamp' in download.text
+    assert f'on *:TEXT:!leetclock *:{listener}:' in download.text
+    if private_replies:
+        assert 'msg #game !timetest' not in download.text
+        assert 'a private chat with LeetBot' in page.text
+
+    class ScriptText(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.inside = False
+            self.parts = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'textarea':
+                self.inside = True
+
+        def handle_endtag(self, tag):
+            if tag == 'textarea':
+                self.inside = False
+
+        def handle_data(self, data):
+            if self.inside:
+                self.parts.append(data)
+
+    parser = ScriptText()
+    parser.feed(page.text)
+    assert ''.join(parser.parts) == download.text  # Copy and download install identical code.
+    assert not bot.clock_tests  # Installation never allocates or depends on a test ID.
+    assert 'href="/timetest"' in client.get('/').text
+    other = app.test_client()
+    assert other.get('/timetest/script.mrc').status_code == 302
+    assert login(other).headers['Location'] == '/timetest/script.mrc'
+    assert other.get('/timetest/script.mrc').text == download.text
+
+
+def test_reusable_clock_install_unavailable_without_bot(app):
+    client = app.test_client()
+    login(client)
+    assert client.get('/timetest').status_code == 404
+    assert client.get('/timetest/script.mrc').status_code == 404
 
 
 def test_headers_and_public_health(app):

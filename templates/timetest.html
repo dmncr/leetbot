@@ -12,15 +12,30 @@
     <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">13</span> leetbot / stats</a>
     <p class="eyebrow">MILLISECONDS / CLOCK & LATENCY</p>
     <h1>Where does your clock stand?</h1>
-    <p class="muted">Issued to <strong>{{ nick }}</strong> · one use · expires five minutes after your request. Keep the same nickname and IRC network.</p>
+    {% set result_location = 'a private chat with LeetBot' if private_replies else 'the channel' %}
+    <p class="small muted">Command replies are currently {{ 'private' if private_replies else 'public' }}. Clock test results appear in {{ result_location }}. <code>!leetbottime</code> and <code>!time</code> always reply in the channel.</p>
+    {% if reusable %}
+    <p class="muted">Install once, then run <code>/leetclock</code> whenever you want to compare your Windows clock with LeetBot. Everyone in {{ channel }} can use the same script; each run gets a fresh ID tied to your current nickname.</p>
     <ol>
-      <li>In mIRC, press <strong>Alt+R</strong>, choose <strong>Remote → File → New</strong>, then paste the script below and click OK.</li>
-      <li>In the <strong>{{ channel }}</strong> window, run <code>/leetclock_{{ token }}</code>.</li>
-      <li>The bot posts your result in the channel automatically. You can remove the script from mIRC afterward.</li>
+      <li>Copy the script below. In mIRC, open <strong>Tools → Script Editor</strong> (or press <strong>Alt+R</strong>), select the <strong>Remote</strong> tab, then choose <strong>File → New</strong>.</li>
+      <li>Paste the script, choose <strong>File → Save As</strong>, save it as <strong>leetbot-clock.mrc</strong>, then click OK. Install only one copy; keep it in its own Remote file so other scripts can also receive channel messages.</li>
+      <li>In the <strong>{{ channel }}</strong> window on LeetBot’s IRC network, run <code>/leetclock</code>. The script requests a fresh ID, measures your clock and answers the bot automatically. Your signed timing difference, clock offset and latency appear in {{ result_location }}.</li>
+      <li>Next time, just run <code>/leetclock</code> again. Wait at least five seconds between tests. Use <code>/leetclock cancel</code> to cancel a running test.</li>
     </ol>
+    <p class="small muted">If nothing happens, check that Remote scripts are enabled with <code>/remote on</code> and that LeetBot is in the channel. Allow mIRC COM access if prompted. A test times out after two minutes. If you change nickname during a test, cancel and run again. If the bot changes nickname or switches between public and private replies, download the script again. To uninstall, use <code>/leetclock cancel</code>, then open this file in the Script Editor and choose <strong>File → Unload</strong>.</p>
+    {% else %}
+    <p class="muted">Issued to <strong>{{ nick }}</strong> · one use · expires five minutes after your request. Keep the same nickname and IRC network.</p>
+    <p><a href="{{ url_for('clock_install') }}">Prefer to install once? Get the reusable /leetclock script ↗</a></p>
+    <ol>
+      <li>In mIRC, open <strong>Tools → Script Editor</strong> (or press <strong>Alt+R</strong>), select the <strong>Remote</strong> tab, then choose <strong>File → New</strong>. Paste the script below and click OK.</li>
+      <li>In the <strong>{{ channel }}</strong> window, run <code>/leetclock_{{ token }}</code>.</li>
+      <li>The bot posts your result in {{ result_location }} automatically. You can remove the script from mIRC afterward.</li>
+    </ol>
+    {% endif %}
     <p class="small muted">Uses mIRC COM and Windows PowerShell on Windows 10/11. It temporarily runs a hidden clock reader, closes it after the reply, and times out after two minutes. It does not change your clock.</p>
-    <div class="clock-actions"><button class="primary" id="copy-script" type="button">Copy mIRC script</button><a href="{{ url_for('timetest_script', token=token) }}">Download .mrc ↗</a><span id="copy-status" class="small muted" role="status"></span></div>
-    <label class="small muted" for="clock-script">Your generated mIRC snippet</label>
+    <p class="small muted">mIRC reference: <a href="https://www.mirc.com/help/html/remote.html">Remote scripts</a> · <a href="https://www.mirc.com/help/html/com_objects.html">COM support</a></p>
+    <div class="clock-actions"><button class="primary" id="copy-script" type="button">Copy mIRC script</button><a href="{{ url_for('clock_install_script') if reusable else url_for('timetest_script', token=token) }}">Download .mrc ↗</a><span id="copy-status" class="small muted" role="status"></span></div>
+    <label class="small muted" for="clock-script">{{ 'Reusable mIRC script' if reusable else 'Your generated mIRC snippet' }}</label>
     <textarea id="clock-script" readonly spellcheck="false" wrap="off">{{ script }}</textarea>
     <p class="muted small">The signed total timing difference comes first (your send timestamp minus bot receipt time), followed by the estimated Windows clock offset: positive means ahead, negative means behind. Round-trip latency excludes the bot’s reply queue. Windows samples have millisecond resolution. One-way transit and clock offset assume similar delay in both directions and include client handling overhead.</p>
     <p class="small"><a href="{{ url_for('index') }}">← Back to the leaderboard</a></p>
