@@ -69,6 +69,53 @@ def test_empty_period(app):
     assert data['summary']['all_time_high']['score'] == 99
 
 
+def test_overview_and_history_are_protected_and_split(app):
+    client = app.test_client()
+    assert client.get('/history').status_code == 302
+    login(client)
+    overview = client.get('/').text
+    history = client.get('/history').text
+    assert 'When did everyone hit send?' in overview
+    assert '13:37:36.500–13:37:37.500' in overview
+    assert 'id="leaderboard-body"' in overview and 'id="leaderboard-body"' in history
+    assert 'id="timing-split"' in overview and 'id="heatmap"' in overview
+    assert 'id="accuracy-body"' not in overview and 'id="winners-body"' not in overview
+    assert 'id="attempts-body"' not in overview
+    assert 'id="accuracy-body"' in history and 'id="winners-body"' in history
+    assert 'id="attempts-body"' in history and 'id="timing-chart"' in history
+    assert client.get('/api/stats').json['timing_window']['included'] == 1
+
+
+def test_clock_snippet_authentication_expiry_and_started_id(tmp_path):
+    from types import SimpleNamespace
+    from leetbot import LeetBot
+
+    store = ScoreStore(tmp_path / 'clock.sqlite3')
+    bot = LeetBot('#game', 'bot', 'localhost', store=store)
+    bot.connection.real_nickname = 'bot'  # Simulate the registered bot without connecting.
+    bot.start_clock_test(SimpleNamespace(source=SimpleNamespace(nick='player')))
+    token = next(iter(bot.clock_tests))
+    app = create_app(store, password='test-password', clock_bot=bot)
+    client = app.test_client()
+    assert client.get(f'/timetest/{token}').status_code == 302
+    assert login(client).headers['Location'] == f'/timetest/{token}'
+    page = client.get(f'/timetest/{token}')
+    assert page.status_code == 200 and 'Copy mIRC script' in page.text
+    script = client.get(f'/timetest/{token}/script.mrc')
+    assert script.status_code == 200 and script.mimetype == 'text/plain'
+    assert f'leetbot-clock-{token}.mrc' in script.headers['Content-Disposition']
+    assert f'msg #game !timetest {token} start' in script.text
+    assert f'on *:TEXT:!leetclock {token} *:#game:' in script.text
+    assert 'ToUnixTimeMilliseconds' in script.text
+    assert 'timer' in script.text and 'Terminate' in script.text
+    assert client.get('/timetest/unknown').status_code == 404
+    bot.clock_tests[token].phase = 'queued'
+    assert client.get(f'/timetest/{token}').status_code == 404
+    bot.clock_tests[token].phase = 'issued'
+    bot.clock_tests[token].expires = 0
+    assert client.get(f'/timetest/{token}/script.mrc').status_code == 404
+
+
 def test_headers_and_public_health(app):
     response = app.test_client().get('/healthz')
     assert response.json == {'status':'ok'}

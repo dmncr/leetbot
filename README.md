@@ -4,6 +4,10 @@ An IRC timing competition with transactional SQLite storage and a password-prote
 
 The site uses a dark documentation-style layout with blue/violet accents inspired by [BMad Method](https://docs.bmad-method.org/start/build-your-first-change/) and [Spec Kit](https://speckit.org). All fonts, styles, scripts, icons, and SVG charts are local; no CDN or external analytics is required.
 
+The overview at `/` keeps the score leaderboard prominent alongside attendance trends, the calendar heatmap, and an early/late/exact timing donut. “When did everyone hit send?” zooms into **13:37:36.500–13:37:37.500**, including both endpoints, in 25 ms bins. Times measure bot receipt, including network latency; attempts outside the window are counted separately. `/history` contains precision rankings, the full-minute timing chart, detailed statistics, calendar champions, and the latest 30 attempts. Period, date, and precision threshold carry between pages.
+
+The website and IRC bot share one process. Build and test updates before recreating the live container; each recreation reconnects to IRC. Use an isolated web-only preview or tests with networking disabled, avoid the competition window, and avoid repeated restarts that could trigger IRC connection limits. Outgoing IRC messages remain queued at one line per second.
+
 ## Run with Docker Compose
 
 1. Copy `docker-compose.yaml.default` to `docker-compose.yaml` and `.env.example` to `.env`.
@@ -50,12 +54,19 @@ Historical scores are preserved exactly, even where an old scoring rule produced
 | Command | Response |
 | --- | --- |
 | `!help` | Rules, commands, statistics URL and shared password |
-| `!time`, `!timetest` | Bot time and competition timezone |
+| `!leetbottime`, `!time` | Bot receipt time and competition timezone, posted to the channel |
+| `!timetest` | One-use mIRC snippet link for millisecond Windows clock-offset and IRC latency estimates |
 | `!topscore`, `!topscores`, `!highscores` | Current day/week/month/year top five, plus site URL and password |
 | `!toptoday`, `!topweek`, `!topmonth`, `!topyear` | Period top five and recorded participation, plus site URL and password |
 | `!statistics` | Lifetime statistics for the ten most active players, plus site URL and password |
 
-The bot announces the game at 13:36 and daily results at 13:38:30. Sunday's results include the weekly scoreboard; the first of each month/year includes the previous period. Results include the site URL and password even when nobody played. IRC output is queued at one line per second, with a five-second channel command cooldown; competition attempts are always accepted within the game window.
+All command replies go to the configured competition channel, including commands received in a private query. Private competition attempts never score. Commands have a five-second cooldown per nickname and command family (aliases share one cooldown); one player's command no longer suppresses another player's request. IRC output remains queued at one line per second. Time replies and test probes take priority over long scoreboard output.
+
+`!timetest` returns a password-protected site link with a generated ID bound to the requesting nickname for five minutes. Copy its snippet into a new mIRC Remote script (Alt+R → Remote → File → New), then run the generated `/leetclock_<id>` alias in the competition channel. The script uses mIRC's built-in COM support and Windows PowerShell on Windows 10/11 to read real UTC Unix milliseconds. It warms the clock reader before measuring, automatically responds when the bot's probe arrives, and closes the reader afterward or after a two-minute timeout. It does not use uptime ticks as a wall clock or change the computer's time.
+
+The response puts the signed total timing difference first (client send timestamp minus bot receipt timestamp), then the estimated Windows clock offset (client minus bot: positive means ahead, negative means behind), IRC round-trip time, and estimated one-way transit. Four timestamps exclude the bot's outgoing queue from RTT. One-way transit and clock offset assume symmetric network delay; client event handling and local clock-reader overhead affect the estimate. The script is available only until that ID starts or expires. Request a new `!timetest` after a nickname change or timeout. Results are diagnostics and never affect competition scores.
+
+The bot announces the game at 13:36 and daily results at 13:38:30. Sunday's results include the weekly scoreboard; the first of each month/year includes the previous period. Results include the site URL and password even when nobody played. Competition attempts are always accepted within the game window.
 
 New scores use `max(1, 100 × (1 − absolute_distance_seconds / 13))`. Exactly on target scores 100; the consolation floor is 1. The old code accidentally targeted 37 microseconds after the second, and the old README described 37 milliseconds; the new target is the exact second requested. Imported scores are never recomputed.
 

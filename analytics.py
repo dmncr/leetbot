@@ -39,6 +39,20 @@ def dashboard(store, period, anchor, min_days=5):
     accuracy = sorted([r for r in leaders if r['days'] >= min_days and r['average_offset_ms'] is not None],
                       key=lambda r: (r['average_offset_ms'], -r['days'], r['nick']))
     offsets = [r['offset_us'] / 1000 for r in rows if r['offset_us'] is not None]
+    # 25 ms bins across the requested one-second window. Include both endpoints;
+    # the right endpoint belongs to the final bin, not an extra 41st bin.
+    timing_window = {'start_us': -500_000, 'end_us': 500_000, 'bin_us': 25_000,
+                     'bins': [0] * 40, 'included': 0, 'outside': 0,
+                     'unknown': len(rows) - len(offsets)}
+    for row in rows:
+        offset = row['offset_us']
+        if offset is None:
+            continue
+        if -500_000 <= offset <= 500_000:
+            timing_window['bins'][min(39, (offset + 500_000) // 25_000)] += 1
+            timing_window['included'] += 1
+        else:
+            timing_window['outside'] += 1
     closest = min((r for r in rows if r['offset_us'] is not None), key=lambda r: abs(r['offset_us']), default=None)
     histogram = [0] * 60
     for row in rows:
@@ -61,7 +75,7 @@ def dashboard(store, period, anchor, min_days=5):
             'latest_date': last_date, 'min_days': min_days, 'leaderboard': leaders, 'accuracy': accuracy,
             'daily_winners': winners, 'monthly_winners': store.calendar_winners('monthly', period, anchor),
             'yearly_winners': store.calendar_winners('yearly', period, anchor), 'attendance': attendance,
-            'histogram': histogram, 'recent': list(reversed(rows[-30:])),
+            'histogram': histogram, 'timing_window': timing_window, 'recent': list(reversed(rows[-30:])),
             'import': json.loads(meta['legacy_import']) if 'legacy_import' in meta else None,
             'summary': {'attempts': len(rows), 'players': len(by_player), 'active_days': len(by_day),
                         'average_score': statistics.mean(r['score'] for r in rows) if rows else None,

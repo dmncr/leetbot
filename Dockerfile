@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd --gid 1000 leetbot \
     && useradd --uid 1000 --gid leetbot --no-create-home leetbot \
     && mkdir -p /data /legacy && chown leetbot:leetbot /data
-COPY leetbot.py game.py storage.py analytics.py webapp.py ./
+COPY leetbot.py game.py storage.py analytics.py webapp.py clocktest.py ./
 COPY templates ./templates
 COPY static ./static
 USER 1000:1000

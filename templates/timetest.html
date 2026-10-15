@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>Clock test · LeetBot</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='timetest.js') }}" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-card clock-card">
+    <a class="brand" href="{{ url_for('index') }}"><span class="brand-mark">13</span> leetbot / stats</a>
+    <p class="eyebrow">MILLISECONDS / CLOCK & LATENCY</p>
+    <h1>Where does your clock stand?</h1>
+    <p class="muted">Issued to <strong>{{ nick }}</strong> · one use · expires five minutes after your request. Keep the same nickname and IRC network.</p>
+    <ol>
+      <li>In mIRC, press <strong>Alt+R</strong>, choose <strong>Remote → File → New</strong>, then paste the script below and click OK.</li>
+      <li>In the <strong>{{ channel }}</strong> window, run <code>/leetclock_{{ token }}</code>.</li>
+      <li>The bot posts your result in the channel automatically. You can remove the script from mIRC afterward.</li>
+    </ol>
+    <p class="small muted">Uses mIRC COM and Windows PowerShell on Windows 10/11. It temporarily runs a hidden clock reader, closes it after the reply, and times out after two minutes. It does not change your clock.</p>
+    <div class="clock-actions"><button class="primary" id="copy-script" type="button">Copy mIRC script</button><a href="{{ url_for('timetest_script', token=token) }}">Download .mrc ↗</a><span id="copy-status" class="small muted" role="status"></span></div>
+    <label class="small muted" for="clock-script">Your generated mIRC snippet</label>
+    <textarea id="clock-script" readonly spellcheck="false" wrap="off">{{ script }}</textarea>
+    <p class="muted small">The signed total timing difference comes first (your send timestamp minus bot receipt time), followed by the estimated Windows clock offset: positive means ahead, negative means behind. Round-trip latency excludes the bot’s reply queue. Windows samples have millisecond resolution. One-way transit and clock offset assume similar delay in both directions and include client handling overhead.</p>
+    <p class="small"><a href="{{ url_for('index') }}">← Back to the leaderboard</a></p>
+  </main>
+</body>
+</html>

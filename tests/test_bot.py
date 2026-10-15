@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import socket
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -91,6 +91,166 @@ def test_disconnect_clears_stale_queue(bot):
     assert not bot.joined and not bot.outbox
 
 
+@pytest.mark.parametrize('private', [False, True])
+@pytest.mark.parametrize('command', ['!help', '!time', '!leetbottime', '!timetest', '!topscore', '!topweek', '!statistics'])
+def test_commands_always_answer_in_channel(bot, private, command):
+    bot.now = lambda: datetime(2026, 1, 1, 12, tzinfo=bot.timezone)
+    c = Mock(); c.get_nickname.return_value = 'bot'
+    handler = bot.on_privmsg if private else bot.on_pubmsg
+    handler(c, event(command, target='bot' if private else '#game'))
+    assert bot.outbox
+    assert all(target == '#game' for target, _ in bot.outbox)
+
+
+def test_cooldown_is_per_player_and_command_family(bot):
+    bot.now = lambda: datetime(2026, 1, 1, 12, tzinfo=bot.timezone)
+    c = Mock(); c.get_nickname.return_value = 'bot'
+    bot.on_pubmsg(c, event('!help'))
+    bot.on_pubmsg(c, event('!leetbottime'))
+    assert 'Server receipt time' in bot.outbox[0][1]
+    count = len(bot.outbox)
+    bot.on_pubmsg(c, event('!time'))
+    assert len(bot.outbox) == count  # An alias cannot bypass the same-command cooldown.
+    bot.on_pubmsg(c, event('!leetbottime', nick='another-player'))
+    assert len(bot.outbox) == count + 1
+
+
+def request_clock_test(bot, nick='player'):
+    c = Mock(); c.get_nickname.return_value = 'bot'
+    bot.on_pubmsg(c, event('!timetest', nick=nick))
+    token = next(reversed(bot.clock_tests))
+    assert any(f'/timetest/{token}' in text for _, text in bot.outbox)
+    return c, token
+
+
+def send_probe(bot, send_time):
+    bot.now = lambda: send_time
+    bot.joined = True
+    bot.connection.is_connected = lambda: True
+    bot.connection.privmsg = Mock()
+    bot.tick()
+    bot.connection.privmsg.assert_called_once()
+    return bot.connection.privmsg.call_args.args[1]
+
+
+@pytest.mark.parametrize('offset_ms,expected', [(37, '+37.000'), (-42, '-42.000')])
+def test_clock_round_trip_offset_and_queue_exclusion(bot, offset_ms, expected):
+    received = datetime(2026, 1, 1, 13, 37, 37, 250000, tzinfo=bot.timezone)
+    bot.now = lambda: received
+    c, token = request_clock_test(bot)
+    t1 = int(received.timestamp() * 1000) + offset_ms - 25
+    bot.on_pubmsg(c, event(f'!timetest {token} start {t1}'))
+    assert bot.clock_tests[token].phase == 'queued'
+    # Five seconds waiting for IRC output must not become network latency.
+    sent = received + timedelta(seconds=5)
+    assert send_probe(bot, sent) == f'!leetclock {token} ready'
+    t4 = int(sent.timestamp() * 1000) + offset_ms + 25
+    bot.on_pubmsg(c, event(f'!timetest {token} result {t4}'))
+    assert f'Estimated Windows clock offset: {expected} ms' in bot.outbox[0][1]
+    assert bot.outbox[0][1].startswith(f'player: {offset_ms - 25:+.3f} ms total timing difference')
+    assert 'IRC RTT: 50.000 ms; one-way transit ~25.000 ms' in bot.outbox[0][1]
+    assert token not in bot.clock_tests
+    assert all(target == '#game' for target, _ in bot.outbox)
+    assert not bot.store.attempts('all', date(2026, 1, 1))
+    bot.outbox.clear()
+    bot.on_pubmsg(c, event(f'!timetest {token} result {t4}'))
+    assert 'already used' in bot.outbox[0][1]
+
+
+def test_clock_id_bound_to_nickname_and_private_callback(bot):
+    received = datetime(2026, 1, 1, 12, tzinfo=bot.timezone)
+    bot.now = lambda: received
+    c, token = request_clock_test(bot, nick='Player[')
+    stamp = int(received.timestamp() * 1000)
+    bot.on_pubmsg(c, event(f'!timetest {token} start {stamp}', nick='intruder'))
+    assert bot.clock_tests[token].phase == 'issued'
+    bot.on_pubmsg(c, event(f'!timetest {token} start $ctime', nick='Player['))
+    assert bot.clock_tests[token].phase == 'issued'
+    assert any('Unix timestamp in milliseconds' in text for _, text in bot.outbox)
+    bot.on_privmsg(c, event(f'!timetest {token} start {stamp}', nick='PLAYER{', target='bot'))
+    send_probe(bot, received)
+    bot.on_privmsg(c, event(f'!timetest {token} result {stamp}', nick='PLAYER{', target='bot'))
+    assert token not in bot.clock_tests
+    assert 'Estimated Windows clock offset: +0.000 ms' in bot.outbox[0][1]
+
+
+@pytest.mark.parametrize('stamp', ['nan', 'inf', '999999999999999999999', '-62135596800001', '253402300800000', '123 extra'])
+def test_clock_callback_rejects_invalid_timestamps(bot, stamp):
+    c, token = request_clock_test(bot)
+    bot.on_pubmsg(c, event(f'!timetest {token} start {stamp}'))
+    assert bot.clock_tests[token].phase == 'issued'
+    assert not any('Estimated Windows clock offset' in text for _, text in bot.outbox)
+
+
+def test_clock_rejects_wrong_step_and_duplicate_start(bot):
+    c, token = request_clock_test(bot)
+    stamp = int(bot.now().timestamp() * 1000)
+    bot.on_pubmsg(c, event(f'!timetest {token} result {stamp}'))
+    assert bot.clock_tests[token].phase == 'issued'
+    bot.on_pubmsg(c, event(f'!timetest {token} start {stamp}'))
+    count = len(bot.outbox)
+    bot.on_pubmsg(c, event(f'!timetest {token} start {stamp}'))
+    assert len(bot.outbox) == count
+    assert bot.clock_tests[token].phase == 'queued'
+
+
+def test_clock_rejects_negative_rtt(bot):
+    received = datetime(2026, 1, 1, 12, tzinfo=bot.timezone)
+    bot.now = lambda: received
+    c, token = request_clock_test(bot)
+    stamp = int(received.timestamp() * 1000)
+    bot.on_pubmsg(c, event(f'!timetest {token} start {stamp}'))
+    send_probe(bot, received + timedelta(seconds=1))
+    bot.on_pubmsg(c, event(f'!timetest {token} result {stamp + 500}'))
+    assert token not in bot.clock_tests
+    assert 'Clock changed' in bot.outbox[0][1]
+
+
+def test_clock_millisecond_rounding_on_fast_link(bot):
+    received = datetime(2026, 1, 1, 12, tzinfo=bot.timezone)
+    bot.now = lambda: received
+    c, token = request_clock_test(bot)
+    stamp = int(received.timestamp() * 1000)
+    bot.on_pubmsg(c, event(f'!timetest {token} start {stamp}'))
+    send_probe(bot, received + timedelta(seconds=1, microseconds=500))
+    bot.on_pubmsg(c, event(f'!timetest {token} result {stamp + 1000}'))
+    assert 'IRC RTT: 0.000 ms' in bot.outbox[0][1]
+    assert 'Estimated Windows clock offset: -0.250 ms' in bot.outbox[0][1]
+
+
+def test_clock_expiry_new_id_and_disconnect(bot, monkeypatch):
+    monotonic = [1000.0]
+    monkeypatch.setattr('leetbot.time.monotonic', lambda: monotonic[0])
+    c, first = request_clock_test(bot)
+    monotonic[0] += 6
+    _, second = request_clock_test(bot)
+    assert first not in bot.clock_tests and second != first
+    monotonic[0] += 300
+    bot.on_pubmsg(c, event(f'!timetest {second} start 1767271057000'))
+    assert not bot.clock_tests
+    assert any('expired' in text for _, text in bot.outbox)
+    monotonic[0] += 6
+    request_clock_test(bot)
+    bot.on_disconnect(c, None)
+    assert not bot.clock_tests
+
+
+def test_private_attempts_never_score_and_timing_replies_keep_pacing(bot):
+    bot.now = lambda: datetime(2026, 1, 1, 13, 37, 37, tzinfo=bot.timezone)
+    c = Mock(); c.get_nickname.return_value = 'bot'
+    bot.on_privmsg(c, event('1337', target='bot'))
+    assert not bot.store.attempts('all', date(2026, 1, 1))
+    bot.say('#game', 'queued scoreboard')
+    bot.on_pubmsg(c, event('!leetbottime'))
+    bot.joined = True
+    bot.connection.is_connected = lambda: True
+    bot.connection.privmsg = Mock()
+    bot.tick()
+    bot.connection.privmsg.assert_called_once()
+    assert 'Server receipt time' in bot.connection.privmsg.call_args.args[1]
+    assert len(bot.outbox) == 1
+
+
 def test_real_irc_protocol_handshake_scoring_and_reply(tmp_path):
     """Loopback-only IRC exchange verifies framework handlers and buffer wiring."""
     with socket.socket() as listener:
@@ -126,4 +286,31 @@ def test_real_irc_protocol_handshake_scoring_and_reply(tmp_path):
             while b'protocol-password' not in reply:
                 reply += peer.recv(4096)
             assert b'PRIVMSG #game :Stats: https://stats.example.org' in reply
+            # Private commands must use the same public reply path.
+            peer.sendall(b':player!u@h PRIVMSG bot :!leetbottime\r\n')
+            bot.reactor.process_once(.1)
+            bot.tick()
+            assert b'PRIVMSG #game :Server receipt time:' in peer.recv(4096)
+            peer.sendall(b':player!u@h PRIVMSG #game :!timetest\r\n')
+            bot.reactor.process_once(.1)
+            token = next(iter(bot.clock_tests))
+            while bot.outbox:
+                bot.tick()
+            assert f'/timetest/{token}'.encode() in peer.recv(4096)
+            received_time = bot.now()
+            t1 = int(received_time.timestamp() * 1000) - 18
+            peer.sendall(f':player!u@h PRIVMSG #game :!timetest {token} start {t1}\r\n'.encode())
+            bot.reactor.process_once(.1)
+            sent_time = received_time + timedelta(seconds=4)
+            bot.now = lambda: sent_time
+            bot.tick()
+            assert f'PRIVMSG #game :!leetclock {token} ready'.encode() in peer.recv(4096)
+            t4 = int(sent_time.timestamp() * 1000) + 42
+            peer.sendall(f':player!u@h PRIVMSG #game :!timetest {token} result {t4}\r\n'.encode())
+            bot.reactor.process_once(.1)
+            bot.tick()
+            response = peer.recv(4096)
+            assert b'PRIVMSG #game :player: -18.000 ms total timing difference' in response
+            assert b'Estimated Windows clock offset: +12.000 ms' in response
+            assert b'IRC RTT: 60.000 ms; one-way transit ~30.000 ms' in response
             bot.connection.disconnect('test complete')

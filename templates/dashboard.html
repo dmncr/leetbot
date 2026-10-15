@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark"><title>Scoreboard · LeetBot</title>
+  <meta name="color-scheme" content="dark"><title>{{ 'Stats & history' if history else 'Overview' }} · LeetBot</title>
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
 </head>
-<body>
+<body class="{{ 'history-page' if history else 'overview-page' }}">
   <a class="skip-link" href="#main">Skip to statistics</a>
   <header class="topbar">
     <a class="brand" href="/"><span class="brand-mark">13</span> leetbot<span class="brand-slash">/</span>stats</a>
@@ -17,12 +17,19 @@
   </header>
   <aside class="sidebar" aria-label="Sections">
     <p class="nav-label">THE COMPETITION</p>
-    <nav><a class="active" href="#overview">Overview <span>01</span></a><a href="#leaderboards">Leaderboards <span>02</span></a><a href="#activity">Attendance <span>03</span></a><a href="#timing">Timing lab <span>04</span></a><a href="#champions">Hall of fame <span>05</span></a><a href="#attempts">Attempt log <span>06</span></a></nav>
+    <nav>
+      <a class="{{ 'active' if not history }}" href="{{ url_for('index') }}" data-page-link>Overview <span>01</span></a>
+      <a href="#leaderboards">Leaderboards <span>02</span></a>
+      {% if not history %}<a href="#activity">Attendance <span>03</span></a><a href="#timing">Timing lab <span>04</span></a>{% endif %}
+      <a class="{{ 'active' if history }}" href="{{ url_for('history') }}" data-page-link>Stats & history <span>05</span></a>
+      <a href="{{ url_for('history') }}#champions" data-page-link>Hall of fame <span>06</span></a><a href="{{ url_for('history') }}#attempts" data-page-link>Attempt log <span>07</span></a>
+    </nav>
     <div class="sidebar-note"><span class="nav-label">HOW TO PLAY</span><p>Type <code>1337</code> in IRC.<br>Aim for <strong>13:37:37</strong>.<br>Get closer. Get glory.</p><span id="sidebar-zone" class="small muted"></span></div>
   </aside>
   <main id="main">
+    <nav class="page-tabs" aria-label="Pages"><a href="{{ url_for('index') }}" data-page-link {% if not history %}aria-current="page"{% endif %}>Overview</a><a href="{{ url_for('history') }}" data-page-link {% if history %}aria-current="page"{% endif %}>Stats & history</a></nav>
     <section id="overview" class="hero">
-      <div><p class="eyebrow">IRC / THE 1337 CHALLENGE</p><h1>mbhooden <span class="gradient">1337 showdown</span></h1><p class="muted">A daily ritual. A very small window. A very competitive channel.</p></div>
+      <div><p class="eyebrow">IRC / THE 1337 CHALLENGE</p><h1>{% if history %}The numbers. <span class="gradient">The history.</span>{% else %}mbhooden <span class="gradient">1337 showdown</span>{% endif %}</h1><p class="muted">{{ 'Precision rankings, calendar champions, and the latest recorded attempts.' if history else 'A daily ritual. A very small window. A very competitive channel.' }}</p></div>
       <div class="target-clock"><span class="eyebrow">THE MOMENT TO BEAT</span><strong>13:37:37<span>.000</span></strong><span class="small muted" id="timezone">Loading timezone…</span></div>
     </section>
     <div class="filters">
@@ -46,10 +53,11 @@
       <article class="panel"><div class="panel-heading"><div><h3>Score leaderboard</h3><p class="small muted">Best attempt in the selected period. Exact score ties share a rank.</p></div><span class="tag" id="board-period">ALL TIME</span></div>
         <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th><button data-sort="score">Best score ↓</button></th><th><button data-sort="average_score">Avg. score</button></th><th><button data-sort="days">Days played</button></th><th><button data-sort="attempts">Attempts</button></th><th><button data-sort="wins">Daily wins</button></th><th><button data-sort="longest_streak">Best streak</button></th></tr></thead><tbody id="leaderboard-body"></tbody></table></div>
       </article>
-      <article class="panel accuracy-panel"><div class="panel-heading"><div><h3>Precision leaderboard</h3><p class="small muted">Average absolute distance across every recorded attempt. Lower is better.</p></div><label class="small muted">Minimum days <input id="min-days" type="number" min="1" max="365" value="5"></label></div>
+      {% if history %}<article class="panel accuracy-panel"><div class="panel-heading"><div><h3>Precision leaderboard</h3><p class="small muted">Average absolute distance across every recorded attempt. Lower is better.</p></div><label class="small muted">Minimum days <input id="min-days" type="number" min="1" max="365" value="5"></label></div>
         <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th>Mean distance</th><th>Median distance</th><th>Std. deviation</th><th>Closest</th><th>Days played</th></tr></thead><tbody id="accuracy-body"></tbody></table></div>
-      </article>
+      </article>{% else %}<p class="section-link"><a href="{{ url_for('history') }}#leaderboards" data-page-link>Explore precision rankings & full statistics ↗</a></p>{% endif %}
     </section>
+    {% if not history %}
     <section id="activity" class="section">
       <div class="section-heading"><div><p class="eyebrow">02 / SHOWING UP IS HALF THE GAME</p><h2>The channel’s pulse.</h2></div></div>
       <article class="panel"><div class="panel-heading"><div><h3>Attendance over time</h3><p class="small muted">Unique players and total attempts. Gaps between recorded games count as zero.</p></div><label class="small muted">Group by <select id="graph-group"><option value="day">Day</option><option value="month">Month</option></select></label></div><div class="chart-legend"><span class="legend-blue">● Players</span><span class="legend-purple">● Attempts</span></div><div id="attendance-chart" class="chart"></div></article>
@@ -57,17 +65,25 @@
     </section>
     <section id="timing" class="section">
       <div class="section-heading"><div><p class="eyebrow">03 / UNREASONABLY SPECIFIC STATISTICS</p><h2>Inside the timing lab.</h2></div></div>
-      <div class="two-columns"><article class="panel"><div class="panel-heading"><div><h3>When did everyone hit send?</h3><p class="small muted">Attempts per second within the 13:37 minute. The line marks the target.</p></div></div><div id="timing-chart" class="chart"></div></article>
+      <div class="two-columns"><article class="panel"><div class="panel-heading"><div><h3>When did everyone hit send?</h3><p class="small muted">13:37:36.500–13:37:37.500 · 25 ms bins. Recorded when the bot received each message.</p></div></div><div id="timing-window-chart" class="chart"></div><p id="timing-window-note" class="chart-note small muted"></p></article>
+        <article class="panel"><div class="panel-heading"><div><h3>Early bird or fashionably late?</h3><p class="small muted">All timed attempts in this selection, relative to 13:37:37.000.</p></div></div><div id="timing-split" class="timing-split"></div></article></div>
+      <p class="section-link"><a href="{{ url_for('history') }}#timing" data-page-link>See the full minute & timing statistics ↗</a></p>
+    </section>
+    {% else %}
+    <section id="timing" class="section">
+      <div class="section-heading"><div><p class="eyebrow">02 / THE TIMING DETAILS</p><h2>Every millisecond counts.</h2></div></div>
+      <div class="two-columns"><article class="panel"><div class="panel-heading"><div><h3>The full 13:37 minute</h3><p class="small muted">Attempts per second. The line marks the target.</p></div></div><div id="timing-chart" class="chart"></div></article>
         <article class="panel"><div class="panel-heading"><h3>The nerd numbers</h3><span class="tag">RECEIPT TIME</span></div><dl class="nerd-stats" id="nerd-stats"></dl></article></div>
     </section>
     <section id="champions" class="section">
-      <div class="section-heading"><div><p class="eyebrow">04 / FOR THE RECORD</p><h2>A little well-earned glory.</h2></div><label class="small muted">Champions <select id="winner-period"><option value="daily">Daily</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
+      <div class="section-heading"><div><p class="eyebrow">03 / FOR THE RECORD</p><h2>A little well-earned glory.</h2></div><label class="small muted">Champions <select id="winner-period"><option value="daily">Daily</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
       <article class="panel"><div class="panel-heading"><p class="small muted">Calendar champions for periods represented in this selection. Score ties share the win.</p><span id="winner-count" class="tag"></span></div><div class="table-wrap"><table><thead><tr><th>Period</th><th>Winner</th><th>Best score</th><th>Players</th><th>Attempts</th></tr></thead><tbody id="winners-body"></tbody></table></div><button id="more-winners" class="subtle more-button" type="button" hidden>Show more champions ↓</button></article>
     </section>
     <section id="attempts" class="section">
-      <div class="section-heading"><div><p class="eyebrow">05 / EVERY ATTEMPT HAS A STORY</p><h2>The last 30 shots.</h2></div></div>
+      <div class="section-heading"><div><p class="eyebrow">04 / EVERY ATTEMPT HAS A STORY</p><h2>The last 30 shots.</h2></div></div>
       <article class="panel"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Player</th><th>Received at</th><th>Distance to target</th><th>Score</th><th>Origin</th></tr></thead><tbody id="attempts-body"></tbody></table></div></article>
     </section>
+    {% endif %}
     <footer><p><strong>Small window. Big commitment.</strong> LeetBot / 1337 statistics</p><p>Timing uses the bot’s receipt time, including network latency. Historical scores are preserved; timing always measures distance to 13:37:37. Summary-only legacy data is excluded from attendance and averages.</p><p id="import-note" class="small muted"></p></footer>
   </main>
 </body>

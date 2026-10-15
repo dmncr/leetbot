@@ -10,12 +10,13 @@ import threading
 import time
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 
 from analytics import dashboard
+from clocktest import mirc_script
 
 
-def create_app(store, *, password=None, secret_key=None):
+def create_app(store, *, password=None, secret_key=None, clock_bot=None):
     password = password if password is not None else os.environ.get('STATS_PASSWORD', '')
     if not password:
         raise ValueError('STATS_PASSWORD must be set')
@@ -39,6 +40,8 @@ def create_app(store, *, password=None, secret_key=None):
             if not session.get('authenticated'):
                 if request.path.startswith('/api/'):
                     return jsonify(error='Authentication required'), 401
+                if request.endpoint in ('timetest', 'timetest_script'):
+                    session['login_return'] = url_for(request.endpoint, **request.view_args)
                 return redirect(url_for('login'))
             return fn(*args, **kwargs)
         return wrapper
@@ -76,12 +79,13 @@ def create_app(store, *, password=None, secret_key=None):
             if blocked:
                 error, status = 'Too many attempts. Try again in five minutes.', 429
             elif hmac.compare_digest(hashlib.sha256(request.form.get('password', '').encode()).digest(), password_hash):
+                destination = session.get('login_return', url_for('index'))
                 session.clear()
                 session.update(authenticated=True, csrf=secrets.token_urlsafe(32))
                 session.permanent = True
                 with rate_lock:
                     attempts.pop(peer, None)
-                return redirect(url_for('index'))
+                return redirect(destination)
             else:
                 error, status = 'Incorrect password. Try again.', 401
         return render_template('login.html', error=error), status
@@ -96,7 +100,33 @@ def create_app(store, *, password=None, secret_key=None):
     @app.get('/')
     @protected
     def index():
-        return render_template('dashboard.html')
+        return render_template('dashboard.html', history=False)
+
+    @app.get('/history')
+    @protected
+    def history():
+        return render_template('dashboard.html', history=True)
+
+    def clock_script(token):
+        pending = clock_bot.clock_tests.get(token) if clock_bot else None
+        if (not pending or pending.expires <= time.monotonic() or pending.phase != 'issued'
+                or len(token) != 12 or any(char not in '0123456789abcdef' for char in token)):
+            abort(404, 'Clock test expired or already started. Request !timetest again in IRC.')
+        return pending, mirc_script(token, clock_bot.channel, clock_bot.connection.get_nickname())
+
+    @app.get('/timetest/<token>')
+    @protected
+    def timetest(token):
+        pending, script = clock_script(token)
+        return render_template('timetest.html', token=token, nick=pending.nick,
+                               channel=clock_bot.channel, script=script)
+
+    @app.get('/timetest/<token>/script.mrc')
+    @protected
+    def timetest_script(token):
+        _, script = clock_script(token)
+        return Response(script, mimetype='text/plain', headers={
+            'Content-Disposition': f'attachment; filename="leetbot-clock-{token}.mrc"'})
 
     @app.get('/api/stats')
     @protected
