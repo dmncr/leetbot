@@ -54,6 +54,8 @@ def dashboard(store, period, anchor, min_days=5):
         else:
             timing_window['outside'] += 1
     closest = min((r for r in rows if r['offset_us'] is not None), key=lambda r: abs(r['offset_us']), default=None)
+    best_attempts = sorted((r for r in rows if r['offset_us'] is not None),
+                           key=lambda r: (abs(r['offset_us']), r['game_date'], r['local_time'], r['id']))[:20]
     histogram = [0] * 60
     for row in rows:
         if row['local_time'] and row['local_time'].startswith('13:37:'):
@@ -73,6 +75,7 @@ def dashboard(store, period, anchor, min_days=5):
     meta = store.metadata()
     return {'period': period, 'anchor': anchor.isoformat(), 'timezone': store.timezone, 'years': years,
             'latest_date': last_date, 'min_days': min_days, 'leaderboard': leaders, 'accuracy': accuracy,
+            'best_attempts': best_attempts,
             'daily_winners': winners, 'monthly_winners': store.calendar_winners('monthly', period, anchor),
             'yearly_winners': store.calendar_winners('yearly', period, anchor), 'attendance': attendance,
             'histogram': histogram, 'timing_window': timing_window, 'recent': list(reversed(rows[-30:])),

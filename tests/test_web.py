@@ -65,6 +65,7 @@ def test_empty_period(app):
     client = app.test_client(); login(client)
     data = client.get('/api/stats?period=day&date=2026-02-01').json
     assert data['leaderboard'] == [] and data['attendance'] == []
+    assert data['best_attempts'] == []
     assert data['summary']['closest'] is None
     assert data['summary']['all_time_high']['score'] == 99
 
@@ -188,6 +189,21 @@ def test_reusable_clock_install_unavailable_without_bot(app):
     login(client)
     assert client.get('/timetest').status_code == 404
     assert client.get('/timetest/script.mrc').status_code == 404
+
+
+@pytest.mark.parametrize('page', ['/', '/history'])
+def test_best_attempts_api_includes_individual_attempts_and_controls(app, page):
+    client = app.test_client(); login(client)
+    data = client.get('/api/stats?period=day&date=2026-01-01').json
+    assert len(data['best_attempts']) == 1
+    attempt = data['best_attempts'][0]
+    assert attempt['nick'] == '<script>alert(1)</script>'
+    assert attempt['game_date'] == '2026-01-01' and attempt['local_time'] == '13:37:37.000000'
+    assert attempt['offset_us'] == 0 and attempt['score'] == 99
+    html = client.get(page).text
+    assert 'Best individual attempts' in html
+    assert 'id="best-attempts-body"' in html
+    assert 'id="more-best-attempts"' in html
 
 
 def test_headers_and_public_health(app):

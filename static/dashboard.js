@@ -4,7 +4,7 @@ const number = (value, digits = 2) => value == null ? '—' : Number(value).toLo
 const distance = value => value == null ? '—' : value < 1000 ? `${number(value, 3)} ms` : `${number(value / 1000, 3)} s`;
 const initialParams = new URLSearchParams(location.search);
 const state = {period: ['day', 'week', 'month', 'year', 'all'].includes(initialParams.get('period')) ? initialParams.get('period') : 'all',
-  minDays: initialParams.get('min_days') || '5', data: null, sort: 'score', winnerLimit: 20};
+  minDays: initialParams.get('min_days') || '5', data: null, sort: 'score', winnerLimit: 20, attemptLimit: 10};
 let requestNumber = 0;
 
 function element(tag, text, className) {
@@ -38,6 +38,25 @@ function renderBoards() {
       number(row.attempts, 0), number(row.wins, 0), `${row.longest_streak} d`], rank === 1 ? 'top-rank' : '');
   });
   if (!body.children.length) empty(body, 8, query ? 'No players match your search.' : undefined);
+  const attempts = $('best-attempts-body'); attempts.replaceChildren();
+  let attemptRank = 0, previousDistance = null;
+  data.best_attempts.slice(0, state.attemptLimit).forEach((row, index) => {
+    const absoluteDistance = Math.abs(row.offset_us);
+    if (index === 0 || absoluteDistance !== previousDistance) attemptRank = index + 1;
+    previousDistance = absoluteDistance;
+    if (!row.nick.toLowerCase().includes(query)) return;
+    const direction = row.offset_us < 0 ? 'early' : row.offset_us > 0 ? 'late' : 'exact';
+    tableRow(attempts, [{text: String(attemptRank).padStart(2, '0'), className: 'rank'},
+      {text: row.nick, className: 'player'}, row.game_date, row.local_time,
+      {text: `${distance(absoluteDistance / 1000)} ${direction}`, className: 'number'}, number(row.score, 4)],
+      attemptRank === 1 ? 'top-rank' : '');
+  });
+  if (!attempts.children.length) empty(attempts, 6, query ? `No top ${state.attemptLimit} attempts match your search.` : undefined);
+  $('best-attempts-limit').textContent = `TOP ${state.attemptLimit}`;
+  const expandAttempts = $('more-best-attempts');
+  expandAttempts.hidden = data.best_attempts.length <= 10;
+  expandAttempts.textContent = state.attemptLimit === 10 ? 'Show top 20 attempts ↓' : 'Show top 10 attempts ↑';
+  expandAttempts.setAttribute('aria-expanded', state.attemptLimit === 20 ? 'true' : 'false');
   const accuracy = $('accuracy-body');
   if (!accuracy) return;
   accuracy.replaceChildren();
@@ -341,6 +360,10 @@ document.querySelectorAll('[data-sort]').forEach(button => button.addEventListen
 $('anchor').addEventListener('change', load);
 $('min-days')?.addEventListener('change', load);
 $('search').addEventListener('input', renderBoards);
+$('more-best-attempts').addEventListener('click', () => {
+  state.attemptLimit = state.attemptLimit === 10 ? 20 : 10;
+  renderBoards();
+});
 $('graph-group')?.addEventListener('change', renderAttendance);
 $('heat-year')?.addEventListener('change', renderHeatmap);
 $('winner-period')?.addEventListener('change', () => {state.winnerLimit = 20; renderWinners();});

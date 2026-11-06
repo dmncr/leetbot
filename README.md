@@ -38,6 +38,7 @@ The supplied current history was verified as **422 attempts, 294 active days, 7 
 
 - Day, ISO week, month, year, and all-time leaderboards, with an anchor date, nickname search, and sortable score/attendance/win/streak columns.
 - All-time high score and the closest timestamp in the selected period.
+- Best individual attempts for the selected day, week, month, year, or all time: top 10 by default, expandable to 20. Ranked by absolute distance from 13:37:37, with repeated players allowed and equal distances sharing a rank. Original scores and timestamps are shown; summary-only legacy highs are excluded.
 - Precision ranking by mean absolute distance from the target, with median, standard deviation, and personal best. The configurable minimum is five active days by default.
 - Attendance graph for unique daily players and attempts; monthly aggregation counts player-days. Missing dates between recorded games are zero attendance.
 - A calendar heatmap with selectable year and per-day details.
