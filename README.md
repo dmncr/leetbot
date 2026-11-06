@@ -4,7 +4,7 @@ An IRC timing competition with transactional SQLite storage and a password-prote
 
 The site uses a dark documentation-style layout with blue/violet accents inspired by [BMad Method](https://docs.bmad-method.org/start/build-your-first-change/) and [Spec Kit](https://speckit.org). All fonts, styles, scripts, icons, and SVG charts are local; no CDN or external analytics is required.
 
-The overview at `/` keeps the score leaderboard prominent alongside attendance trends, the calendar heatmap, and an early/late/exact timing donut. “When did everyone hit send?” zooms into **13:37:36.500–13:37:37.500**, including both endpoints, in 25 ms bins. Times measure bot receipt, including network latency; attempts outside the window are counted separately. `/history` contains precision rankings, the full-minute timing chart, detailed statistics, calendar champions, and the latest 30 attempts. Period, date, and precision threshold carry between pages.
+The overview at `/` keeps the score leaderboard prominent alongside attendance trends, the calendar heatmap, and an early/late/exact timing donut. “When did everyone hit send?” zooms into **13:37:36.500–13:37:37.500**, including both endpoints, in 25 ms bins. Times measure bot receipt, including network latency; attempts outside the window are counted separately. `/history` contains precision rankings, the full-minute timing chart, detailed statistics, calendar champions, and the latest attempts. Every dashboard table shows five rows by default and has an independent **Show top 20** toggle when more rows are available; it can collapse back to five. Period, date, and precision threshold carry between pages.
 
 The website and IRC bot share one process. Build and test updates before recreating the live container; each recreation reconnects to IRC. Use an isolated web-only preview or tests with networking disabled, avoid the competition window, and avoid repeated restarts that could trigger IRC connection limits. Outgoing IRC messages remain queued at one line per second.
 
@@ -38,12 +38,12 @@ The supplied current history was verified as **422 attempts, 294 active days, 7 
 
 - Day, ISO week, month, year, and all-time leaderboards, with an anchor date, nickname search, and sortable score/attendance/win/streak columns.
 - All-time high score and the closest timestamp in the selected period.
-- Best individual attempts for the selected day, week, month, year, or all time: top 10 by default, expandable to 20. Ranked by absolute distance from 13:37:37, with repeated players allowed and equal distances sharing a rank. Original scores and timestamps are shown; summary-only legacy highs are excluded.
+- Best individual attempts for the selected day, week, month, year, or all time: top 5 by default, expandable to 20. Ranked by absolute distance from 13:37:37, with repeated players allowed and equal distances sharing a rank. Original scores and timestamps are shown; summary-only legacy highs are excluded.
 - Precision ranking by mean absolute distance from the target, with median, standard deviation, and personal best. The configurable minimum is five active days by default.
 - Attendance graph for unique daily players and attempts; monthly aggregation counts player-days. Missing dates between recorded games are zero attendance.
 - A calendar heatmap with selectable year and per-day details.
 - Attempts by second, early/late/exact counts, hits within 100 ms, average score, and attendance streaks.
-- Daily, monthly, and yearly champions, plus the last 30 attempts in the selection. Exact score ties share the win.
+- Daily, monthly, and yearly champions, plus the latest attempts in the selection. Exact score ties share the win.
 - Automatic refresh every minute. API results may be cached for 15 seconds.
 
 Best single attempt determines a period's score ranking. Averages include **all** recorded attempts, including retries. Attendance counts a player once per game date. Daily wins can be shared; streaks count consecutive calendar days with a recorded attempt. Monthly/yearly champions cover the full calendar periods represented in the selection.

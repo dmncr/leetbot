@@ -53,13 +53,15 @@
       <div class="section-heading"><div><p class="eyebrow">01 / THE RANKINGS</p><h2>Chase the top spot.</h2></div><label class="search-label">Find a player<input id="search" type="search" placeholder="Search nicknames…" autocomplete="off"></label></div>
       <article class="panel"><div class="panel-heading"><div><h3>Score leaderboard</h3><p class="small muted">Best attempt in the selected period. Exact score ties share a rank.</p></div><span class="tag" id="board-period">ALL TIME</span></div>
         <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th><button data-sort="score">Best score ↓</button></th><th><button data-sort="average_score">Avg. score</button></th><th><button data-sort="days">Days played</button></th><th><button data-sort="attempts">Attempts</button></th><th><button data-sort="wins">Daily wins</button></th><th><button data-sort="longest_streak">Best streak</button></th></tr></thead><tbody id="leaderboard-body"></tbody></table></div>
+        <button id="more-leaderboard" class="subtle more-button" type="button" data-table-toggle="leaderboard" aria-expanded="false" aria-controls="leaderboard-body" hidden>Show top 20 ↓</button>
       </article>
-      <article class="panel accuracy-panel"><div class="panel-heading"><div><h3>Best individual attempts</h3><p class="small muted">Closest attempts to 13:37:37 in the selected period. Each attempt counts; players can hold multiple positions. Equal distances share a rank.</p></div><span class="tag" id="best-attempts-limit">TOP 10</span></div>
+      <article class="panel accuracy-panel"><div class="panel-heading"><div><h3>Best individual attempts</h3><p class="small muted">Closest attempts to 13:37:37 in the selected period. Each attempt counts; players can hold multiple positions. Equal distances share a rank.</p></div><span class="tag" id="best-attempts-limit">TOP 5</span></div>
         <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th>Date</th><th>Received at</th><th>Distance to target</th><th>Score</th></tr></thead><tbody id="best-attempts-body"></tbody></table></div>
-        <button id="more-best-attempts" class="subtle more-button" type="button" aria-expanded="false" aria-controls="best-attempts-body" hidden>Show top 20 attempts ↓</button>
+        <button id="more-best-attempts" class="subtle more-button" type="button" data-table-toggle="bestAttempts" aria-expanded="false" aria-controls="best-attempts-body" hidden>Show top 20 ↓</button>
       </article>
       {% if history %}<article class="panel accuracy-panel"><div class="panel-heading"><div><h3>Precision leaderboard</h3><p class="small muted">Average absolute distance across every recorded attempt. Lower is better.</p></div><label class="small muted">Minimum days <input id="min-days" type="number" min="1" max="365" value="5"></label></div>
         <div class="table-wrap"><table><thead><tr><th>Rank</th><th>Player</th><th>Mean distance</th><th>Median distance</th><th>Std. deviation</th><th>Closest</th><th>Days played</th></tr></thead><tbody id="accuracy-body"></tbody></table></div>
+        <button id="more-accuracy" class="subtle more-button" type="button" data-table-toggle="accuracy" aria-expanded="false" aria-controls="accuracy-body" hidden>Show top 20 ↓</button>
       </article>{% else %}<p class="section-link"><a href="{{ url_for('history') }}#leaderboards" data-page-link>Explore precision rankings & full statistics ↗</a></p>{% endif %}
     </section>
     {% if not history %}
@@ -82,11 +84,11 @@
     </section>
     <section id="champions" class="section">
       <div class="section-heading"><div><p class="eyebrow">03 / FOR THE RECORD</p><h2>A little well-earned glory.</h2></div><label class="small muted">Champions <select id="winner-period"><option value="daily">Daily</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
-      <article class="panel"><div class="panel-heading"><p class="small muted">Calendar champions for periods represented in this selection. Score ties share the win.</p><span id="winner-count" class="tag"></span></div><div class="table-wrap"><table><thead><tr><th>Period</th><th>Winner</th><th>Best score</th><th>Players</th><th>Attempts</th></tr></thead><tbody id="winners-body"></tbody></table></div><button id="more-winners" class="subtle more-button" type="button" hidden>Show more champions ↓</button></article>
+      <article class="panel"><div class="panel-heading"><p class="small muted">Calendar champions for periods represented in this selection. Score ties share the win.</p><span id="winner-count" class="tag"></span></div><div class="table-wrap"><table><thead><tr><th>Period</th><th>Winner</th><th>Best score</th><th>Players</th><th>Attempts</th></tr></thead><tbody id="winners-body"></tbody></table></div><button id="more-winners" class="subtle more-button" type="button" data-table-toggle="winners" aria-expanded="false" aria-controls="winners-body" hidden>Show top 20 ↓</button></article>
     </section>
     <section id="attempts" class="section">
-      <div class="section-heading"><div><p class="eyebrow">04 / EVERY ATTEMPT HAS A STORY</p><h2>The last 30 shots.</h2></div></div>
-      <article class="panel"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Player</th><th>Received at</th><th>Distance to target</th><th>Score</th><th>Origin</th></tr></thead><tbody id="attempts-body"></tbody></table></div></article>
+      <div class="section-heading"><div><p class="eyebrow">04 / EVERY ATTEMPT HAS A STORY</p><h2>The latest shots.</h2></div></div>
+      <article class="panel"><div class="table-wrap"><table><thead><tr><th>Date</th><th>Player</th><th>Received at</th><th>Distance to target</th><th>Score</th><th>Origin</th></tr></thead><tbody id="attempts-body"></tbody></table></div><button id="more-attempts" class="subtle more-button" type="button" data-table-toggle="attempts" aria-expanded="false" aria-controls="attempts-body" hidden>Show top 20 ↓</button></article>
     </section>
     {% endif %}
     <footer><p><strong>Small window. Big commitment.</strong> LeetBot / 1337 statistics</p><p>Timing uses the bot’s receipt time, including network latency. Historical scores are preserved; timing always measures distance to 13:37:37. Summary-only legacy data is excluded from attendance and averages.</p><p id="import-note" class="small muted"></p></footer>

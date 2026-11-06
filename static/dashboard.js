@@ -4,7 +4,8 @@ const number = (value, digits = 2) => value == null ? '—' : Number(value).toLo
 const distance = value => value == null ? '—' : value < 1000 ? `${number(value, 3)} ms` : `${number(value / 1000, 3)} s`;
 const initialParams = new URLSearchParams(location.search);
 const state = {period: ['day', 'week', 'month', 'year', 'all'].includes(initialParams.get('period')) ? initialParams.get('period') : 'all',
-  minDays: initialParams.get('min_days') || '5', data: null, sort: 'score', winnerLimit: 20, attemptLimit: 10};
+  minDays: initialParams.get('min_days') || '5', data: null, sort: 'score',
+  tableLimits: {leaderboard: 5, bestAttempts: 5, accuracy: 5, winners: 5, attempts: 5}};
 let requestNumber = 0;
 
 function element(tag, text, className) {
@@ -22,50 +23,55 @@ function tableRow(body, cells, className = '') {
   cells.forEach(cell => row.append(element('td', cell.text ?? cell, cell.className ?? '')));
   body.append(row);
 }
+function limitedRows(key, rows) {
+  const limit = state.tableLimits[key];
+  const button = document.querySelector(`[data-table-toggle="${key}"]`);
+  button.hidden = rows.length <= 5;
+  button.textContent = limit === 5 ? 'Show top 20 ↓' : 'Show top 5 ↑';
+  button.setAttribute('aria-expanded', String(limit === 20));
+  return rows.slice(0, limit);
+}
+function rankedRows(rows, value) {
+  let previous, rank = 0;
+  return rows.map((row, index) => {
+    const current = value(row);
+    if (index === 0 || current !== previous) rank = index + 1;
+    previous = current;
+    return {row, rank};
+  });
+}
 function renderBoards() {
   const data = state.data;
   if (!data) return;
   const query = $('search').value.trim().toLowerCase();
   const board = [...data.leaderboard].sort((a, b) => (b[state.sort] ?? -Infinity) - (a[state.sort] ?? -Infinity) || a.nick.localeCompare(b.nick));
   const body = $('leaderboard-body'); body.replaceChildren();
-  let previous = null, rank = 0;
-  board.forEach((row, index) => {
-    if (row[state.sort] !== previous || index === 0) rank = index + 1;
-    previous = row[state.sort];
-    if (!row.nick.toLowerCase().includes(query)) return;
+  const matches = entry => entry.row.nick.toLowerCase().includes(query);
+  const rankedBoard = rankedRows(board, row => row[state.sort]).filter(matches);
+  limitedRows('leaderboard', rankedBoard).forEach(({row, rank}) => {
     tableRow(body, [{text: String(rank).padStart(2, '0'), className: 'rank'}, {text: row.nick, className: 'player'},
       {text: number(row.score, 4), className: 'number'}, number(row.average_score), number(row.days, 0),
       number(row.attempts, 0), number(row.wins, 0), `${row.longest_streak} d`], rank === 1 ? 'top-rank' : '');
   });
   if (!body.children.length) empty(body, 8, query ? 'No players match your search.' : undefined);
   const attempts = $('best-attempts-body'); attempts.replaceChildren();
-  let attemptRank = 0, previousDistance = null;
-  data.best_attempts.slice(0, state.attemptLimit).forEach((row, index) => {
+  const rankedAttempts = rankedRows(data.best_attempts, row => Math.abs(row.offset_us)).filter(matches);
+  limitedRows('bestAttempts', rankedAttempts).forEach(({row, rank}) => {
     const absoluteDistance = Math.abs(row.offset_us);
-    if (index === 0 || absoluteDistance !== previousDistance) attemptRank = index + 1;
-    previousDistance = absoluteDistance;
-    if (!row.nick.toLowerCase().includes(query)) return;
     const direction = row.offset_us < 0 ? 'early' : row.offset_us > 0 ? 'late' : 'exact';
-    tableRow(attempts, [{text: String(attemptRank).padStart(2, '0'), className: 'rank'},
+    tableRow(attempts, [{text: String(rank).padStart(2, '0'), className: 'rank'},
       {text: row.nick, className: 'player'}, row.game_date, row.local_time,
       {text: `${distance(absoluteDistance / 1000)} ${direction}`, className: 'number'}, number(row.score, 4)],
-      attemptRank === 1 ? 'top-rank' : '');
+      rank === 1 ? 'top-rank' : '');
   });
-  if (!attempts.children.length) empty(attempts, 6, query ? `No top ${state.attemptLimit} attempts match your search.` : undefined);
-  $('best-attempts-limit').textContent = `TOP ${state.attemptLimit}`;
-  const expandAttempts = $('more-best-attempts');
-  expandAttempts.hidden = data.best_attempts.length <= 10;
-  expandAttempts.textContent = state.attemptLimit === 10 ? 'Show top 20 attempts ↓' : 'Show top 10 attempts ↑';
-  expandAttempts.setAttribute('aria-expanded', state.attemptLimit === 20 ? 'true' : 'false');
+  if (!attempts.children.length) empty(attempts, 6, query ? 'No top 20 attempts match your search.' : undefined);
+  $('best-attempts-limit').textContent = `TOP ${state.tableLimits.bestAttempts}`;
   const accuracy = $('accuracy-body');
   if (!accuracy) return;
   accuracy.replaceChildren();
-  let accuracyRank = 0, previousMean = null;
-  data.accuracy.forEach((row, index) => {
-    if (index === 0 || previousMean !== row.average_offset_ms) accuracyRank = index + 1;
-    previousMean = row.average_offset_ms;
-    if (!row.nick.toLowerCase().includes(query)) return;
-    tableRow(accuracy, [{text: String(accuracyRank).padStart(2, '0'), className: 'rank'}, {text: row.nick, className: 'player'},
+  const rankedAccuracy = rankedRows(data.accuracy, row => row.average_offset_ms).filter(matches);
+  limitedRows('accuracy', rankedAccuracy).forEach(({row, rank}) => {
+    tableRow(accuracy, [{text: String(rank).padStart(2, '0'), className: 'rank'}, {text: row.nick, className: 'player'},
       {text: distance(row.average_offset_ms), className: 'number'}, distance(row.median_offset_ms),
       distance(row.deviation_ms), distance(row.closest_ms), number(row.days, 0)]);
   });
@@ -278,12 +284,26 @@ function renderWinners() {
   const key = $('winner-period').value;
   const rows = state.data[`${key}_winners`];
   const body = $('winners-body'); body.replaceChildren();
-  rows.slice(0, state.winnerLimit).forEach(row => tableRow(body, [row.date || row.period,
+  limitedRows('winners', rows).forEach(row => tableRow(body, [row.date || row.period,
     {text: row.nicks.join(' + '), className: 'player'}, {text: number(row.score, 4), className: 'number'},
     row.participants ?? '—', row.attempts ?? '—']));
   if (!rows.length) empty(body, 5, 'No champions in this selection.');
   $('winner-count').textContent = `${rows.length} ${key === 'daily' ? 'DAYS' : key === 'monthly' ? 'MONTHS' : 'YEARS'}`;
-  $('more-winners').hidden = rows.length <= state.winnerLimit;
+}
+
+function renderRecent() {
+  const body = $('attempts-body');
+  if (!state.data || !body) return;
+  body.replaceChildren();
+  limitedRows('attempts', state.data.recent).forEach(row => tableRow(body, [row.game_date,
+    {text: row.nick, className: 'player'}, row.local_time || '—',
+    row.offset_us == null ? '—' : `${distance(Math.abs(row.offset_us) / 1000)} ${row.offset_us < 0 ? 'early' : row.offset_us > 0 ? 'late' : 'exact'}`,
+    {text: number(row.score, 4), className: 'number'}, row.source === 'live' ? 'Live' : 'Imported']));
+  if (!body.children.length) empty(body, 6);
+}
+
+function renderTables() {
+  renderBoards(); renderWinners(); renderRecent();
 }
 
 function render(data) {
@@ -309,14 +329,6 @@ function render(data) {
     $('heat-year').value = state.heatScope === heatScope && years.includes(oldYear) ? oldYear : selectedYear;
     state.heatScope = heatScope;
   }
-  const attempts = $('attempts-body');
-  if (attempts) {
-    attempts.replaceChildren();
-    data.recent.forEach(row => tableRow(attempts, [row.game_date, {text: row.nick, className: 'player'}, row.local_time || '—',
-      row.offset_us == null ? '—' : `${distance(Math.abs(row.offset_us) / 1000)} ${row.offset_us < 0 ? 'early' : row.offset_us > 0 ? 'late' : 'exact'}`,
-      {text: number(row.score, 4), className: 'number'}, row.source === 'live' ? 'Live' : 'Imported']));
-    if (!data.recent.length) empty(attempts, 6);
-  }
   $('import-note').textContent = data.import ? `History imported: ${data.import.attempts} recorded attempts, ${data.import.daily_summaries} summary-only daily records. Original scores retained.` : 'Scores are stored transactionally in SQLite.';
   const params = new URLSearchParams({period: data.period, date: data.anchor, min_days: String(data.min_days)});
   history.replaceState(null, '', `${location.pathname}?${params}${location.hash}`);
@@ -325,7 +337,7 @@ function render(data) {
     target.search = params.toString();
     link.href = `${target.pathname}${target.search}${target.hash}`;
   });
-  renderBoards(); renderAttendance(); renderHeatmap(); renderTiming(); renderWinners();
+  renderTables(); renderAttendance(); renderHeatmap(); renderTiming();
 }
 
 async function load() {
@@ -348,7 +360,7 @@ async function load() {
   }
 }
 document.querySelectorAll('[data-period]').forEach(button => button.addEventListener('click', () => {
-  state.period = button.dataset.period; state.winnerLimit = 20;
+  state.period = button.dataset.period;
   document.querySelectorAll('[data-period]').forEach(b => {b.classList.toggle('selected', b === button); b.setAttribute('aria-pressed', b === button ? 'true' : 'false');});
   load();
 }));
@@ -360,14 +372,14 @@ document.querySelectorAll('[data-sort]').forEach(button => button.addEventListen
 $('anchor').addEventListener('change', load);
 $('min-days')?.addEventListener('change', load);
 $('search').addEventListener('input', renderBoards);
-$('more-best-attempts').addEventListener('click', () => {
-  state.attemptLimit = state.attemptLimit === 10 ? 20 : 10;
-  renderBoards();
-});
+document.querySelectorAll('[data-table-toggle]').forEach(button => button.addEventListener('click', () => {
+  const key = button.dataset.tableToggle;
+  state.tableLimits[key] = state.tableLimits[key] === 5 ? 20 : 5;
+  renderTables();
+}));
 $('graph-group')?.addEventListener('change', renderAttendance);
 $('heat-year')?.addEventListener('change', renderHeatmap);
-$('winner-period')?.addEventListener('change', () => {state.winnerLimit = 20; renderWinners();});
-$('more-winners')?.addEventListener('click', () => {state.winnerLimit += 30; renderWinners();});
+$('winner-period')?.addEventListener('change', () => {state.tableLimits.winners = 5; renderWinners();});
 $('latest').addEventListener('click', () => {if (state.data?.latest_date) {$('anchor').value = state.data.latest_date; if (state.period === 'all') document.querySelector('[data-period="day"]').click(); else load();}});
 document.querySelectorAll('.sidebar nav a').forEach(link => link.addEventListener('click', () => {
   document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.toggle('active', a === link));
